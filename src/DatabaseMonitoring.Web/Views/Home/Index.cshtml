@@ -1,0 +1,130 @@
+@model IEnumerable<DatabaseMonitoring.Web.Models.DatabaseInfo>
+@{
+    ViewData["Title"] = "Veritabanı Seç";
+    var dbList    = Model?.ToList() ?? [];
+    var errors    = ViewBag.Errors as List<string> ?? [];
+    var conns     = ViewBag.Connections as IReadOnlyList<DatabaseMonitoring.Web.Models.ConnectionEntry> ?? [];
+    var groups    = dbList.GroupBy(d => d.ConnectionName).OrderBy(g => g.Key).ToList();
+    var maxSize   = dbList.Any() ? dbList.Max(d => d.SizeMB) : 1;
+}
+
+<style>
+    .picker-hero { text-align:center; padding:2.5rem 0 1.5rem; }
+    .picker-hero h2 { font-size:1.7rem; font-weight:700; color:#f1f5f9; }
+    .search-wrap { position:relative; max-width:420px; margin:0 auto 1.5rem; }
+    .search-wrap input { width:100%; background:#161b27; border:1px solid #2d3748; border-radius:10px; padding:10px 16px 10px 40px; color:#e2e8f0; font-size:.9rem; outline:none; transition:border-color .2s; }
+    .search-wrap input:focus { border-color:#3b82f6; }
+    .search-wrap input::placeholder { color:#475569; }
+    .search-wrap .si { position:absolute; left:13px; top:50%; transform:translateY(-50%); color:#475569; font-size:.85rem; }
+    .db-card { background:#161b27; border:1px solid #2d3748; border-radius:12px; padding:1.2rem 1.4rem; cursor:pointer; transition:transform .18s,border-color .18s,box-shadow .18s; text-decoration:none; display:block; height:100%; }
+    .db-card:hover { transform:translateY(-3px); border-color:#3b82f6; box-shadow:0 10px 28px rgba(59,130,246,.18); }
+    .db-card:hover .arr { opacity:1; transform:translateX(4px); }
+    .arr { opacity:.35; transition:opacity .18s,transform .18s; }
+    .db-name { font-size:.98rem; font-weight:700; color:#f1f5f9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .db-stat { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #1e2535; font-size:.8rem; }
+    .db-stat:last-child { border-bottom:none; }
+    .db-stat .lbl { color:#64748b; }
+    .db-stat .val { color:#e2e8f0; font-weight:600; }
+    .sz-bar { height:3px; background:#1e2535; border-radius:2px; margin-top:12px; overflow:hidden; }
+    .sz-bar .fill { height:100%; border-radius:2px; background:linear-gradient(90deg,#3b82f6,#6366f1); }
+    .group-label { font-size:.78rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:#475569; margin:1.5rem 0 .75rem; padding-left:4px; display:flex; align-items:center; gap:8px; }
+    .group-label::after { content:''; flex:1; height:1px; background:#1e2535; }
+</style>
+
+<div class="picker-hero">
+    <div style="font-size:2.2rem; margin-bottom:.6rem;">🗄️</div>
+    <h2>Veritabanı Seçin</h2>
+    <p class="text-secondary small">İzlemek istediğiniz veritabanına tıklayın</p>
+</div>
+
+@if (errors.Any())
+{
+    <div class="alert-dark-warn p-3 mb-4 mx-auto" style="max-width:700px;">
+        <i class="fas fa-exclamation-triangle me-2"></i>
+        <strong>Bağlantı Hataları:</strong>
+        <ul class="mb-0 mt-1">
+            @foreach (var e in errors) { <li>@e</li> }
+        </ul>
+    </div>
+}
+
+@if (dbList.Any())
+{
+    <div class="search-wrap">
+        <i class="fas fa-search si"></i>
+        <input type="text" id="dbSearch" placeholder="Veritabanı ara..." autocomplete="off" />
+    </div>
+
+    <p class="text-center text-secondary small mb-3">
+        <span id="visibleCount">@dbList.Count</span> veritabanı · <span id="connCount">@conns.Count</span> sunucu
+    </p>
+
+    @foreach (var grp in groups)
+    {
+        var conn = conns.FirstOrDefault(c => c.Name == grp.Key);
+        <div class="group-label db-group">
+            <span class="badge badge-provider tag-@(conn?.Type ?? "mssql")">@(conn?.Type.ToUpper() ?? "")</span>
+            @grp.Key
+            <span class="text-secondary" style="font-weight:400;">(@grp.Count() veritabanı)</span>
+        </div>
+        <div class="row g-3 mb-2">
+            @foreach (var db in grp)
+            {
+                var pct = maxSize > 0 ? (int)(db.SizeMB / maxSize * 100) : 0;
+                <div class="col-12 col-sm-6 col-lg-4 col-xl-3 db-item" data-name="@db.Name.ToLower()" data-conn="@db.ConnectionName.ToLower()">
+                    <a class="db-card"
+                       asp-controller="Database" asp-action="Details"
+                       asp-route-name="@db.Name"
+                       asp-route-connectionId="@db.ConnectionId">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div class="db-name" title="@db.Name">
+                                <i class="fas fa-database me-2 text-primary" style="font-size:.85rem;"></i>@db.Name
+                            </div>
+                            <i class="fas fa-arrow-right arr text-primary ms-2 mt-1" style="font-size:.85rem;"></i>
+                        </div>
+                        <div class="db-stat"><span class="lbl"><i class="fas fa-table me-1"></i>Tablo</span><span class="val">@db.TableCount</span></div>
+                        <div class="db-stat"><span class="lbl"><i class="fas fa-list me-1"></i>Kayıt</span><span class="val @(db.TotalRows > 500_000 ? "text-warning" : "")">@db.TotalRows.ToString("N0")</span></div>
+                        <div class="db-stat"><span class="lbl"><i class="fas fa-hdd me-1"></i>Boyut</span><span class="val text-success">@db.SizeMB.ToString("N1") MB</span></div>
+                        <div class="sz-bar"><div class="fill" style="width:@pct%"></div></div>
+                    </a>
+                </div>
+            }
+        </div>
+    }
+
+    <div id="noResults" class="text-center py-5 text-secondary d-none">
+        <i class="fas fa-search fa-2x mb-3 d-block opacity-30"></i>
+        <p>Aramanızla eşleşen veritabanı bulunamadı.</p>
+    </div>
+}
+else if (!errors.Any())
+{
+    <div class="text-center py-5 text-secondary">
+        <i class="fas fa-database fa-3x mb-3 d-block opacity-20"></i>
+        <strong class="d-block mb-2">Veritabanı bulunamadı</strong>
+        <p class="small">Aktif bağlantılarda sistem veritabanları dışında DB yok.</p>
+        <a asp-controller="Connections" asp-action="Index" class="btn btn-outline-primary btn-sm mt-2">
+            <i class="fas fa-plug me-1"></i>Bağlantıları Yönet
+        </a>
+    </div>
+}
+
+@section Scripts {
+<script>
+    const searchInput = document.getElementById('dbSearch');
+    if (searchInput) {
+        searchInput.addEventListener('input', function () {
+            const q = this.value.toLowerCase().trim();
+            let shown = 0;
+            document.querySelectorAll('.db-item').forEach(el => {
+                const match = el.dataset.name.includes(q) || el.dataset.conn.includes(q);
+                el.style.display = match ? '' : 'none';
+                if (match) shown++;
+            });
+            document.getElementById('visibleCount').textContent = shown;
+            document.getElementById('noResults').classList.toggle('d-none', shown > 0);
+        });
+        searchInput.focus();
+    }
+</script>
+}

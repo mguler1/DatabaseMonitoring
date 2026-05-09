@@ -1,0 +1,29 @@
+# Build
+bin/
+obj/
+out/
+
+# .NET user files
+*.user
+*.suo
+.vs/
+
+# Publish
+publish/
+*.nupkg
+
+# Secrets & local config — credential içerebilir, commit edilmez
+appsettings.Development.json
+appsettings.*.json
+!appsettings.json
+connections.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rider / JetBrains
+.idea/
+
+# VS Code (opsiyonel — takım paylaşmak istiyorsa kaldır)
+# .vscode/

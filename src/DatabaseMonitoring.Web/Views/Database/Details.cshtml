@@ -1,0 +1,263 @@
+@model DatabaseMonitoring.Web.Models.DatabaseDetailsViewModel
+@{
+    ViewData["Title"] = $"{Model.Database.Name} — Dashboard";
+    var conn   = Model.Connection;
+    var db     = Model.Database;
+    var tables = Model.Tables.ToList();
+    var queries = Model.RecentQueries.ToList();
+}
+
+<div class="d-flex align-items-center gap-3 mb-4">
+    <a asp-controller="Home" asp-action="Index"
+       class="btn btn-outline-secondary btn-sm flex-shrink-0">
+        <i class="fas fa-chevron-left me-1"></i>Seçim
+    </a>
+    <div style="overflow:hidden;">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <h4 class="fw-bold mb-0 text-light" style="line-height:1;">
+                <i class="fas fa-database me-2 text-primary"></i>@db.Name
+            </h4>
+            <span class="badge badge-provider tag-@conn.Type.ToLower()">@conn.Type.ToUpper()</span>
+            <span class="badge bg-success bg-opacity-20 text-success border border-success border-opacity-25">
+                <i class="fas fa-circle me-1" style="font-size:.4rem;vertical-align:middle;"></i>@db.State
+            </span>
+        </div>
+        <small class="text-secondary">
+            <i class="fas fa-server me-1"></i>@conn.Name
+            @if (db.CreateDate.HasValue)
+            { <span>&nbsp;·&nbsp; Oluşturulma: @db.CreateDate.Value.ToString("dd MMM yyyy")</span> }
+        </small>
+    </div>
+    <div class="ms-auto flex-shrink-0">
+        <button class="btn btn-outline-primary btn-sm" onclick="location.reload()">
+            <i class="fas fa-sync-alt me-1"></i>Yenile
+        </button>
+    </div>
+</div>
+
+<!-- Metric kartlar -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card p-3 text-center">
+            <div class="metric-value text-primary">@db.TableCount</div>
+            <div class="metric-label">Tablo</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card p-3 text-center">
+            <div class="metric-value text-warning">@db.TotalRows.ToString("N0")</div>
+            <div class="metric-label">Toplam Kayıt</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card p-3 text-center">
+            <div class="metric-value text-success">@db.SizeMB.ToString("N1") <small class="fs-6">MB</small></div>
+            <div class="metric-label">Toplam Boyut</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card p-3 text-center">
+            <div class="metric-value text-info">@queries.Count</div>
+            <div class="metric-label">Son Sorgular</div>
+        </div>
+    </div>
+</div>
+
+@if (Model.ErrorMessage != null)
+{
+    <div class="alert-dark-warn p-3 mb-4">
+        <i class="fas fa-exclamation-triangle me-2"></i>@Model.ErrorMessage
+    </div>
+}
+
+<!-- Sekmeler -->
+<ul class="nav nav-tabs mb-0" role="tablist">
+    <li class="nav-item">
+        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabTables" type="button">
+            <i class="fas fa-table me-1"></i>Tablolar <span class="badge bg-secondary ms-1">@tables.Count</span>
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabQueries" type="button">
+            <i class="fas fa-terminal me-1"></i>Son SQL <span class="badge bg-secondary ms-1">@queries.Count</span>
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabChart" type="button">
+            <i class="fas fa-chart-pie me-1"></i>Grafik
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content">
+
+    <!-- TABLOLAR -->
+    <div class="tab-pane fade show active" id="tabTables">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table id="tblTables" class="table table-hover mb-0 w-100">
+                        <thead>
+                            <tr>
+                                <th>Tablo</th>
+                                <th>Şema</th>
+                                <th class="text-end">Kayıt</th>
+                                <th class="text-end">Toplam (MB)</th>
+                                <th class="text-end">Kullanılan (MB)</th>
+                                <th>Son SQL</th>
+                                <th>Son Çalışma</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{
+                                var maxMb = tables.Any() ? tables.Max(x => x.TotalSpaceMB) : 1;
+                            }
+                            @foreach (var t in tables)
+                            {
+                                var pct = maxMb > 0 ? (int)(t.TotalSpaceMB / maxMb * 100) : 0;
+                                <tr>
+                                    <td><span class="fw-semibold text-light">@t.TableName</span></td>
+                                    <td><span class="text-secondary small">@t.SchemaName</span></td>
+                                    <td class="text-end">
+                                        <span class="@(t.RowCount > 1_000_000 ? "text-warning fw-bold" : "")">@t.RowCount.ToString("N0")</span>
+                                    </td>
+                                    <td class="text-end text-success">@t.TotalSpaceMB.ToString("N2")</td>
+                                    <td class="text-end">
+                                        <div class="d-flex align-items-center justify-content-end gap-2">
+                                            <div class="progress flex-grow-1" style="height:5px;min-width:40px;">
+                                                <div class="progress-bar bg-info" style="width:@pct%"></div>
+                                            </div>
+                                            <span class="text-info">@t.UsedSpaceMB.ToString("N2")</span>
+                                        </div>
+                                    </td>
+                                    <td style="max-width:260px;">
+                                        @if (t.LastQueryText != null)
+                                        { <span class="query-text small" title="@t.LastQueryText">@t.LastQueryText</span> }
+                                        else
+                                        { <span class="text-secondary small">—</span> }
+                                    </td>
+                                    <td class="text-nowrap">
+                                        @if (t.LastQueryTime.HasValue)
+                                        { <small class="text-secondary">@t.LastQueryTime.Value.ToString("dd.MM.yy HH:mm")</small> }
+                                        else
+                                        { <span class="text-secondary">—</span> }
+                                    </td>
+                                    <td>
+                                        <a asp-controller="Database" asp-action="TableQueries"
+                                           asp-route-db="@db.Name"
+                                           asp-route-table="@t.TableName"
+                                           asp-route-connectionId="@conn.Id"
+                                           class="btn btn-sm btn-outline-primary py-0 px-2">
+                                            <i class="fas fa-search"></i>
+                                        </a>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SON SQL -->
+    <div class="tab-pane fade" id="tabQueries">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body p-0">
+                @if (queries.Any())
+                {
+                    <div class="table-responsive">
+                        <table id="tblQueries" class="table table-hover mb-0 w-100">
+                            <thead>
+                                <tr>
+                                    <th>Son Çalışma</th>
+                                    <th class="text-end">Çalışma</th>
+                                    <th class="text-end">Ort. (ms)</th>
+                                    <th class="text-end">Top. (ms)</th>
+                                    <th>SQL Metni</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var q in queries)
+                                {
+                                    <tr>
+                                        <td class="text-nowrap"><small>@(q.LastExecutionTime?.ToString("dd.MM.yy HH:mm:ss") ?? "—")</small></td>
+                                        <td class="text-end text-warning">@q.ExecutionCount.ToString("N0")</td>
+                                        <td class="text-end text-info">@q.AvgElapsedMs.ToString("N0")</td>
+                                        <td class="text-end text-secondary">@q.TotalElapsedMs.ToString("N0")</td>
+                                        <td style="max-width:500px;">
+                                            <div class="query-text small" style="max-height:72px;overflow-y:auto;">
+                                                @(q.QueryText.Length > 300 ? q.QueryText[..300] + "…" : q.QueryText)
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-terminal fa-2x mb-2 d-block opacity-40"></i>
+                        Sorgu geçmişi bulunamadı.<br/>
+                        <small>VIEW SERVER STATE yetkisi gereklidir veya plan önbelleği boş.</small>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- GRAFİK -->
+    <div class="tab-pane fade" id="tabChart">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-12 col-lg-8">
+                        <p class="section-title mb-2">İlk 20 Tablo — Boyut (MB)</p>
+                        <canvas id="tableSizeChart" height="300"></canvas>
+                    </div>
+                    <div class="col-12 col-lg-4">
+                        <p class="section-title mb-2">İlk 10 Tablo — Kayıt</p>
+                        <canvas id="tableRowChart" height="300"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+@section Scripts {
+<script>
+    $('#tblTables').DataTable({
+        pageLength: 25, order: [[3,'desc']],
+        language: { search:'Ara:', lengthMenu:'_MENU_ kayıt', info:'_TOTAL_ tablodan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Tablo yok', zeroRecords:'Eşleşen yok' }
+    });
+    $('#tblQueries').DataTable({
+        pageLength: 25, order: [[0,'desc']],
+        language: { search:'Ara:', lengthMenu:'_MENU_ sorgu', info:'_TOTAL_ sorgudan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Sorgu yok', zeroRecords:'Eşleşen yok' }
+    });
+
+    const top20 = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+        tables.Take(20).Select(t => new { name = t.TableName, mb = Math.Round(t.TotalSpaceMB,2), rows = t.RowCount })
+    ));
+    const colors = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16',
+                    '#ec4899','#14b8a6','#a855f7','#eab308','#6366f1','#22c55e','#f43f5e','#0ea5e9',
+                    '#d946ef','#fb923c','#4ade80','#38bdf8'];
+
+    new Chart(document.getElementById('tableSizeChart'), {
+        type:'bar',
+        data:{ labels:top20.map(t=>t.name), datasets:[{ label:'MB', data:top20.map(t=>t.mb), backgroundColor:colors, borderRadius:4 }] },
+        options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}}, scales:{ x:{ticks:{color:'#94a3b8'},grid:{color:'#1e2535'}}, y:{ticks:{color:'#94a3b8',font:{size:11}},grid:{display:false}} } }
+    });
+
+    const top10 = top20.slice(0,10);
+    new Chart(document.getElementById('tableRowChart'), {
+        type:'doughnut',
+        data:{ labels:top10.map(t=>t.name), datasets:[{ data:top10.map(t=>t.rows), backgroundColor:colors, borderWidth:2, borderColor:'#0f1117' }] },
+        options:{ responsive:true, plugins:{ legend:{ position:'bottom', labels:{ color:'#94a3b8', boxWidth:10, font:{size:10} } } } }
+    });
+</script>
+}

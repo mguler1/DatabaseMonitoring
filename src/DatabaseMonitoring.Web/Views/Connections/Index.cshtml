@@ -1,0 +1,241 @@
+@model IReadOnlyList<DatabaseMonitoring.Web.Models.ConnectionEntry>
+@{
+    ViewData["Title"] = "Bağlantılar";
+}
+
+<style>
+    .conn-card { background:#161b27; border:1px solid #2d3748; border-radius:12px; padding:1.2rem 1.4rem; transition:border-color .2s; }
+    .conn-card:hover { border-color:#3b82f6; }
+    .conn-inactive { opacity:.5; }
+    .form-card { background:#161b27; border:1px solid #2d3748; border-radius:12px; padding:1.6rem; }
+    .form-label { color:#94a3b8; font-size:.82rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+    .form-control, .form-select {
+        background:#0f1117 !important; border:1px solid #2d3748 !important;
+        color:#e2e8f0 !important; border-radius:8px; font-size:.9rem;
+    }
+    .form-control:focus, .form-select:focus { border-color:#3b82f6 !important; box-shadow:0 0 0 3px rgba(59,130,246,.15) !important; }
+    .form-control::placeholder { color:#475569; }
+    .form-select option { background:#0f1117; }
+    .test-result { font-size:.82rem; margin-top:8px; padding:8px 12px; border-radius:6px; display:none; }
+    .test-ok   { background:#052e16; border:1px solid #166534; color:#86efac; }
+    .test-err  { background:#450a0a; border:1px solid #7f1d1d; color:#fca5a5; }
+    .badge-type { font-size:.68rem; padding:3px 8px; border-radius:20px; }
+</style>
+
+<div class="d-flex align-items-center justify-content-between mb-4">
+    <div>
+        <h4 class="fw-bold mb-0"><i class="fas fa-plug me-2 text-primary"></i>Bağlantı Yönetimi</h4>
+        <p class="text-secondary small mb-0 mt-1">Veritabanı sunucularını ekle, test et ve yönet</p>
+    </div>
+    @if (Model.Any())
+    {
+        <a asp-controller="Home" asp-action="Index" class="btn btn-outline-primary btn-sm">
+            <i class="fas fa-home me-1"></i>Dashboard'a Git
+        </a>
+    }
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert-dark-info p-3 mb-4"><i class="fas fa-check-circle me-2"></i>@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert-dark-warn p-3 mb-4"><i class="fas fa-exclamation-triangle me-2"></i>@TempData["Error"]</div>
+}
+
+<div class="row g-4">
+
+    <!-- Sol: Mevcut bağlantılar -->
+    <div class="col-12 col-lg-7">
+        <p class="section-title mb-3"><i class="fas fa-server me-2"></i>Kayıtlı Bağlantılar (@Model.Count)</p>
+
+        @if (!Model.Any())
+        {
+            <div class="conn-card text-center py-5">
+                <i class="fas fa-plug fa-3x mb-3 d-block text-secondary opacity-30"></i>
+                <p class="text-secondary mb-0">Henüz bağlantı yok.</p>
+                <p class="text-secondary small">Sağdaki formu kullanarak ilk bağlantını ekle.</p>
+            </div>
+        }
+        else
+        {
+            <div class="d-flex flex-column gap-3">
+                @foreach (var c in Model)
+                {
+                    <div class="conn-card @(!c.IsActive ? "conn-inactive" : "")">
+                        <div class="d-flex align-items-center justify-content-between gap-3">
+                            <div class="d-flex align-items-center gap-3" style="overflow:hidden;">
+                                <div>
+                                    <i class="fas fa-circle @(c.IsActive ? "text-success" : "text-secondary")" style="font-size:.55rem; vertical-align:middle;"></i>
+                                </div>
+                                <div style="overflow:hidden;">
+                                    <div class="fw-bold text-light" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                                        @c.Name
+                                    </div>
+                                    <div class="d-flex align-items-center gap-2 mt-1">
+                                        <span class="badge badge-type tag-@c.Type.ToLower()">@c.Type.ToUpper()</span>
+                                        <small class="text-secondary">Eklendi: @c.AddedAt.ToString("dd MMM yyyy")</small>
+                                    </div>
+                                    <small class="text-secondary d-block mt-1" style="font-family:monospace; font-size:.72rem; opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:360px;">
+                                        @MaskConnectionString(c.ConnectionString)
+                                    </small>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 flex-shrink-0">
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        onclick="testExisting('@c.Type','@Html.Raw(c.ConnectionString.Replace("'", "\\'"))', this)"
+                                        title="Bağlantıyı Test Et">
+                                    <i class="fas fa-bolt"></i>
+                                </button>
+                                <form asp-action="Toggle" method="post" class="d-inline">
+                                    <input type="hidden" name="id" value="@c.Id" />
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary" title="@(c.IsActive ? "Devre Dışı Bırak" : "Etkinleştir")">
+                                        <i class="fas @(c.IsActive ? "fa-pause" : "fa-play")"></i>
+                                    </button>
+                                </form>
+                                <form asp-action="Delete" method="post" class="d-inline"
+                                      onsubmit="return confirm('@c.Name bağlantısını silmek istediğinize emin misiniz?')">
+                                    <input type="hidden" name="id" value="@c.Id" />
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                        <div class="test-result" id="result-@c.Id"></div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <!-- Sağ: Yeni bağlantı formu -->
+    <div class="col-12 col-lg-5">
+        <p class="section-title mb-3"><i class="fas fa-plus-circle me-2"></i>Yeni Bağlantı Ekle</p>
+        <div class="form-card">
+            <form asp-action="Add" method="post" id="addForm">
+
+                <div class="mb-3">
+                    <label class="form-label">Bağlantı Adı</label>
+                    <input type="text" name="name" class="form-control" placeholder="örn: Production SQL Server" required />
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Veritabanı Tipi</label>
+                    <select name="type" id="dbType" class="form-select" onchange="updatePlaceholder()">
+                        <option value="mssql">Microsoft SQL Server</option>
+                        <option value="postgresql">PostgreSQL</option>
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Connection String</label>
+                    <textarea name="connectionString" id="connStr" class="form-control" rows="4"
+                              placeholder="Server=localhost;Database=master;Trusted_Connection=True;TrustServerCertificate=True;"
+                              required style="font-family:monospace; font-size:.82rem; resize:vertical;"></textarea>
+                </div>
+
+                <div class="test-result mb-3" id="testResult"></div>
+
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-secondary flex-shrink-0" onclick="testNew()">
+                        <i class="fas fa-bolt me-1"></i>Test Et
+                    </button>
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="fas fa-plus me-1"></i>Ekle
+                    </button>
+                </div>
+            </form>
+
+            <!-- Örnek connection string'ler -->
+            <hr style="border-color:#2d3748; margin:1.2rem 0 1rem;" />
+            <p class="text-secondary" style="font-size:.78rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em;">Örnek şablonlar</p>
+            <div class="d-flex flex-column gap-2" id="templates">
+                <div class="template-item" data-type="mssql"
+                     data-val="Server=SUNUCU;Database=master;Trusted_Connection=True;TrustServerCertificate=True;">
+                    <div style="font-size:.75rem; color:#60a5fa; cursor:pointer;" onclick="applyTemplate(this)">
+                        <i class="fas fa-copy me-1"></i><strong>SQL Server</strong> — Windows Auth
+                    </div>
+                </div>
+                <div class="template-item" data-type="mssql"
+                     data-val="Server=SUNUCU,1433;Database=master;User Id=SA;Password=SIFRE;TrustServerCertificate=True;">
+                    <div style="font-size:.75rem; color:#60a5fa; cursor:pointer;" onclick="applyTemplate(this)">
+                        <i class="fas fa-copy me-1"></i><strong>SQL Server</strong> — SQL Auth
+                    </div>
+                </div>
+                <div class="template-item" data-type="postgresql"
+                     data-val="Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=SIFRE;">
+                    <div style="font-size:.75rem; color:#a7f3d0; cursor:pointer;" onclick="applyTemplate(this)">
+                        <i class="fas fa-copy me-1"></i><strong>PostgreSQL</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    function updatePlaceholder() {
+        const type = document.getElementById('dbType').value;
+        const ta = document.getElementById('connStr');
+        ta.placeholder = type === 'postgresql'
+            ? 'Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=...'
+            : 'Server=localhost;Database=master;Trusted_Connection=True;TrustServerCertificate=True;';
+    }
+
+    function applyTemplate(el) {
+        const parent = el.closest('.template-item');
+        document.getElementById('connStr').value = parent.dataset.val;
+        document.getElementById('dbType').value = parent.dataset.type;
+    }
+
+    async function testNew() {
+        const type = document.getElementById('dbType').value;
+        const cs   = document.getElementById('connStr').value.trim();
+        const box  = document.getElementById('testResult');
+        await runTest(type, cs, box);
+    }
+
+    async function testExisting(type, cs, btn) {
+        const id  = btn.closest('.conn-card').querySelector('.test-result').id;
+        const box = document.getElementById(id);
+        await runTest(type, cs, box);
+    }
+
+    async function runTest(type, cs, box) {
+        if (!cs) { showResult(box, false, 'Connection string boş.'); return; }
+        box.className = 'test-result';
+        box.style.display = 'block';
+        box.textContent = '⏳ Test ediliyor...';
+
+        try {
+            const res = await fetch('@Url.Action("Test","Connections")', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, connectionString: cs })
+            });
+            const data = await res.json();
+            showResult(box, data.ok, data.message);
+        } catch (e) {
+            showResult(box, false, 'İstek başarısız: ' + e.message);
+        }
+    }
+
+    function showResult(box, ok, msg) {
+        box.style.display = 'block';
+        box.className = 'test-result ' + (ok ? 'test-ok' : 'test-err');
+        box.innerHTML = (ok ? '✅ ' : '❌ ') + msg;
+    }
+</script>
+}
+
+@functions {
+    static string MaskConnectionString(string cs)
+    {
+        if (string.IsNullOrWhiteSpace(cs)) return "";
+        return System.Text.RegularExpressions.Regex.Replace(
+            cs, @"(Password|Pwd)=([^;]+)", "$1=***", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+}

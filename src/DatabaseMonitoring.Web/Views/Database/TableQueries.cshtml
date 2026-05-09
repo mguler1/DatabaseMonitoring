@@ -1,0 +1,127 @@
+@model DatabaseMonitoring.Web.Models.TableQueriesViewModel
+@{
+    ViewData["Title"] = $"{Model.TableName} — Sorgu Geçmişi";
+    var queries = Model.Queries.ToList();
+    var conn = Model.Connection;
+}
+
+<div class="d-flex align-items-center gap-3 mb-4">
+    <a asp-controller="Database" asp-action="Details"
+       asp-route-name="@Model.DatabaseName"
+       asp-route-connectionId="@conn.Id"
+       class="btn btn-outline-secondary btn-sm flex-shrink-0">
+        <i class="fas fa-chevron-left me-1"></i>Geri
+    </a>
+    <div>
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <h4 class="fw-bold mb-0 text-light"><i class="fas fa-table me-2 text-primary"></i>@Model.TableName</h4>
+            <span class="badge badge-provider tag-@conn.Type.ToLower()">@conn.Type.ToUpper()</span>
+        </div>
+        <small class="text-secondary"><i class="fas fa-server me-1"></i>@conn.Name &nbsp;·&nbsp; @Model.DatabaseName</small>
+    </div>
+</div>
+
+@if (ViewBag.ErrorMessage != null)
+{
+    <div class="alert-dark-warn p-3 mb-4"><i class="fas fa-exclamation-triangle me-2"></i>@ViewBag.ErrorMessage</div>
+}
+
+@if (queries.Any())
+{
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-md-3">
+            <div class="card p-3 text-center">
+                <div class="metric-value text-primary">@queries.Count</div>
+                <div class="metric-label">Sorgu Planı</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card p-3 text-center">
+                <div class="metric-value text-warning">@queries.Sum(q => q.ExecutionCount).ToString("N0")</div>
+                <div class="metric-label">Toplam Çalışma</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card p-3 text-center">
+                <div class="metric-value text-info">@queries.Average(q => q.AvgElapsedMs).ToString("N0") <small class="fs-6">ms</small></div>
+                <div class="metric-label">Ort. Süre</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card p-3 text-center">
+                <div class="metric-value text-success">@(queries.Max(q => q.LastExecutionTime)?.ToString("HH:mm") ?? "—")</div>
+                <div class="metric-label">Son Çalışma</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
+            <span class="section-title"><i class="fas fa-terminal me-2"></i>Sorgu Geçmişi</span>
+            <small class="text-secondary">sys.dm_exec_query_stats · plan önbelleği</small>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table id="tblQ" class="table table-hover mb-0 w-100">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Son Çalışma</th>
+                            <th class="text-end">Çalışma</th>
+                            <th class="text-end">Ort. (ms)</th>
+                            <th class="text-end">Top. (ms)</th>
+                            <th>SQL Metni</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @{ int i = 1; }
+                        @foreach (var q in queries.OrderByDescending(x => x.LastExecutionTime))
+                        {
+                            <tr>
+                                <td class="text-secondary">@i</td>
+                                <td class="text-nowrap">
+                                    <span class="@(q.LastExecutionTime > DateTime.Now.AddHours(-1) ? "text-success fw-semibold" : "text-secondary")">
+                                        @(q.LastExecutionTime?.ToString("dd.MM.yy HH:mm:ss") ?? "—")
+                                    </span>
+                                </td>
+                                <td class="text-end text-warning fw-semibold">@q.ExecutionCount.ToString("N0")</td>
+                                <td class="text-end">
+                                    <span class="@(q.AvgElapsedMs > 1000 ? "text-danger" : q.AvgElapsedMs > 100 ? "text-warning" : "text-success")">
+                                        @q.AvgElapsedMs.ToString("N0")
+                                    </span>
+                                </td>
+                                <td class="text-end text-secondary">@q.TotalElapsedMs.ToString("N0")</td>
+                                <td>
+                                    <div class="query-text small" style="white-space:pre-wrap;max-height:120px;overflow-y:auto;padding:6px;background:#0f1117;border-radius:6px;border:1px solid #1e2535;">@q.QueryText</div>
+                                </td>
+                            </tr>
+                            i++;
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <div class="card-body p-5 text-center">
+            <i class="fas fa-search fa-3x mb-3 d-block text-secondary opacity-30"></i>
+            <h6 class="text-secondary">Bu tablo için sorgu bulunamadı</h6>
+            <p class="text-secondary small mb-0">Plan önbelleği temizlenmiş olabilir veya VIEW SERVER STATE yetkisi eksik.</p>
+        </div>
+    </div>
+}
+
+@section Scripts {
+<script>
+    if ($('#tblQ').length) {
+        $('#tblQ').DataTable({
+            pageLength: 15, order: [[1,'desc']],
+            columnDefs: [{ orderable:false, targets:[5] }],
+            language: { search:'Ara:', lengthMenu:'_MENU_ sorgu', info:'_TOTAL_ sorgudan _START_–_END_', paginate:{previous:'‹',next:'›'} }
+        });
+    }
+</script>
+}
