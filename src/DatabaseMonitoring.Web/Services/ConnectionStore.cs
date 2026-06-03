@@ -61,6 +61,20 @@ public class ConnectionStore
         }
     }
 
+    public bool Update(string id, string name, string type, string connectionString)
+    {
+        lock (_lock)
+        {
+            var entry = _cache.FirstOrDefault(c => c.Id == id);
+            if (entry == null) return false;
+            entry.Name = name.Trim();
+            entry.Type = type;
+            entry.ConnectionString = connectionString.Trim();
+            Save();
+            return true;
+        }
+    }
+
     private void Load()
     {
         if (!File.Exists(_filePath)) { _cache = []; return; }

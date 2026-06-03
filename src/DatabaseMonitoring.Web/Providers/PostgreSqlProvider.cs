@@ -10,7 +10,6 @@ public class PostgreSqlProvider : IDatabaseProvider
     private readonly string _maintenanceConnectionString;
     private readonly ILogger<PostgreSqlProvider> _logger;
 
-    // Cached once per provider instance: does the server support last_call (PG 14+)?
     private bool? _hasLastCall;
 
     public string ProviderType => "postgresql";
@@ -195,6 +194,196 @@ public class PostgreSqlProvider : IDatabaseProvider
         return await conn.QueryAsync<QueryInfo>(sql, new { Top = top, TableName = tableName });
     }
 
+    public async Task<IEnumerable<ActiveSession>> GetActiveSessionsAsync()
+    {
+        const string sql = """
+            SELECT
+                pid                                                             AS SessionId,
+                usename                                                         AS LoginName,
+                COALESCE(client_hostname, client_addr::text, 'local')          AS HostName,
+                datname                                                         AS DatabaseName,
+                state                                                           AS Status,
+                COALESCE(wait_event_type, 'Active')                            AS Command,
+                NULL::int                                                       AS CpuTime,
+                NULL::int                                                       AS MemoryUsageKB,
+                backend_start                                                   AS LoginTime,
+                state_change                                                    AS LastRequestTime,
+                application_name                                                AS ProgramName,
+                NULL::int                                                       AS BlockingSessionId,
+                wait_event_type                                                 AS WaitType,
+                NULL::int                                                       AS WaitTimeMs
+            FROM pg_stat_activity
+            WHERE datname IS NOT NULL
+              AND pid != pg_backend_pid()
+            ORDER BY state_change DESC NULLS LAST
+            """;
+
+        using var conn = new NpgsqlConnection(_maintenanceConnectionString);
+        return await conn.QueryAsync<ActiveSession>(sql);
+    }
+
+    public async Task<IEnumerable<LongRunningQuery>> GetLongRunningQueriesAsync(int thresholdSeconds = 30)
+    {
+        const string sql = """
+            SELECT
+                pid                                                             AS SessionId,
+                usename                                                         AS LoginName,
+                datname                                                         AS DatabaseName,
+                state                                                           AS Status,
+                COALESCE(wait_event_type, 'Running')                           AS Command,
+                EXTRACT(EPOCH FROM (now() - query_start))::int                 AS ElapsedSeconds,
+                NULL::int                                                       AS WaitTimeMs,
+                wait_event_type                                                 AS WaitType,
+                NULL::int                                                       AS BlockingSessionId,
+                NULL::int                                                       AS CpuTime,
+                NULL::bigint                                                    AS LogicalReads,
+                query                                                           AS QueryText
+            FROM pg_stat_activity
+            WHERE datname IS NOT NULL
+              AND state = 'active'
+              AND query_start IS NOT NULL
+              AND EXTRACT(EPOCH FROM (now() - query_start)) >= @ThresholdSeconds
+            ORDER BY query_start ASC
+            """;
+
+        using var conn = new NpgsqlConnection(_maintenanceConnectionString);
+        return await conn.QueryAsync<LongRunningQuery>(sql, new { ThresholdSeconds = thresholdSeconds });
+    }
+
+    public async Task<IEnumerable<BlockingInfo>> GetBlockingQueriesAsync()
+    {
+        const string sql = """
+            WITH blocking AS (
+                SELECT
+                    a.pid                                                       AS BlockedSessionId,
+                    unnest(pg_blocking_pids(a.pid))                             AS BlockingSessionId,
+                    a.usename                                                   AS BlockedLogin,
+                    a.wait_event_type                                           AS WaitType,
+                    EXTRACT(EPOCH FROM (now() - a.state_change))::int * 1000   AS WaitTimeMs,
+                    a.datname                                                   AS DatabaseName,
+                    a.query                                                     AS BlockedQuery
+                FROM pg_stat_activity a
+                WHERE cardinality(pg_blocking_pids(a.pid)) > 0
+            )
+            SELECT
+                b.BlockedSessionId,
+                b.BlockingSessionId,
+                b.BlockedLogin,
+                COALESCE(a2.usename, '?')                                       AS BlockingLogin,
+                b.WaitType,
+                b.WaitTimeMs,
+                b.DatabaseName,
+                b.BlockedQuery,
+                COALESCE(a2.query, '')                                          AS BlockingQuery
+            FROM blocking b
+            LEFT JOIN pg_stat_activity a2 ON a2.pid = b.BlockingSessionId
+            """;
+
+        using var conn = new NpgsqlConnection(_maintenanceConnectionString);
+        return await conn.QueryAsync<BlockingInfo>(sql);
+    }
+
+    public async Task<IEnumerable<IndexInfo>> GetIndexInfoAsync(string databaseName)
+    {
+        const string sql = """
+            SELECT
+                t.relname                                                       AS TableName,
+                n.nspname                                                       AS SchemaName,
+                i.relname                                                       AS IndexName,
+                am.amname                                                       AS IndexType,
+                ix.indisunique                                                  AS IsUnique,
+                ix.indisprimary                                                 AS IsPrimaryKey,
+                0.0::double precision                                           AS FragmentationPct,
+                COALESCE(i.relpages, 0)                                         AS PageCount,
+                COALESCE(ius.idx_scan, 0)                                       AS UserSeeks,
+                0                                                               AS UserScans,
+                0                                                               AS UserLookups,
+                COALESCE(ius.idx_tup_fetch, 0)                                  AS UserUpdates,
+                NULL::timestamp                                                 AS LastUserSeek,
+                string_agg(a.attname, ', ' ORDER BY array_position(ix.indkey, a.attnum)) AS Columns
+            FROM pg_class t
+            INNER JOIN pg_namespace n  ON t.relnamespace  = n.oid
+            INNER JOIN pg_index ix     ON t.oid            = ix.indrelid
+            INNER JOIN pg_class i      ON ix.indexrelid    = i.oid
+            INNER JOIN pg_am am        ON i.relam          = am.oid
+            INNER JOIN pg_attribute a  ON a.attrelid       = t.oid
+                                      AND a.attnum         = ANY(ix.indkey)
+                                      AND a.attnum > 0
+            LEFT JOIN pg_stat_user_indexes ius ON ius.indexrelid = ix.indexrelid
+            WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+              AND t.relkind = 'r'
+            GROUP BY t.relname, n.nspname, i.relname, am.amname,
+                     ix.indisunique, ix.indisprimary, ix.indexrelid,
+                     i.relpages, ius.idx_scan, ius.idx_tup_fetch
+            ORDER BY t.relname, i.relname
+            """;
+
+        using var conn = new NpgsqlConnection(BuildDbConnectionString(databaseName));
+        return await conn.QueryAsync<IndexInfo>(sql);
+    }
+
+    public async Task<IEnumerable<BackupInfo>> GetBackupStatusAsync(string databaseName)
+    {
+        const string sql = """
+            SELECT
+                current_database()                                              AS DatabaseName,
+                'WAL Archive'                                                   AS BackupType,
+                last_archived_time                                              AS LastBackupDate,
+                0::double precision                                             AS BackupSizeMB,
+                COALESCE(last_archived_wal, '—')                               AS BackupPath,
+                CASE
+                    WHEN last_failed_time IS NULL AND last_archived_time IS NULL THEN 'Not Configured'
+                    WHEN last_failed_time IS NULL THEN 'Active'
+                    WHEN last_archived_time IS NULL THEN 'Failed'
+                    WHEN last_archived_time >= last_failed_time THEN 'Active'
+                    ELSE 'Failed'
+                END                                                             AS Status
+            FROM pg_stat_archiver
+            """;
+
+        using var conn = new NpgsqlConnection(BuildDbConnectionString(databaseName));
+        return await conn.QueryAsync<BackupInfo>(sql);
+    }
+
+    public async Task<IEnumerable<ColumnInfo>> GetColumnsAsync(string databaseName, string tableName, string schemaName = "public")
+    {
+        const string sql = """
+            SELECT
+                a.attnum                                                        AS OrdinalPosition,
+                a.attname                                                       AS ColumnName,
+                format_type(a.atttypid, a.atttypmod)                           AS DataType,
+                NOT a.attnotnull                                                AS IsNullable,
+                a.attlen                                                        AS MaxLength,
+                EXISTS(
+                    SELECT 1 FROM pg_constraint con
+                    WHERE con.contype = 'p'
+                      AND con.conrelid = a.attrelid
+                      AND a.attnum = ANY(con.conkey)
+                )                                                               AS IsPrimaryKey,
+                EXISTS(
+                    SELECT 1 FROM pg_constraint con
+                    WHERE con.contype = 'f'
+                      AND con.conrelid = a.attrelid
+                      AND a.attnum = ANY(con.conkey)
+                )                                                               AS IsForeignKey,
+                pg_get_expr(ad.adbin, ad.adrelid)                              AS DefaultValue,
+                (a.attidentity != '')                                           AS IsIdentity
+            FROM pg_attribute a
+            INNER JOIN pg_class c     ON a.attrelid    = c.oid
+            INNER JOIN pg_namespace n ON c.relnamespace = n.oid
+            LEFT  JOIN pg_attrdef ad  ON ad.adrelid     = a.attrelid
+                                     AND ad.adnum       = a.attnum
+            WHERE c.relname  = @TableName
+              AND n.nspname  = @SchemaName
+              AND a.attnum   > 0
+              AND NOT a.attisdropped
+            ORDER BY a.attnum
+            """;
+
+        using var conn = new NpgsqlConnection(BuildDbConnectionString(databaseName));
+        return await conn.QueryAsync<ColumnInfo>(sql, new { TableName = tableName, SchemaName = schemaName });
+    }
+
     // ---------- private helpers ----------
 
     private async Task<(int tableCount, long totalRows)> GetDatabaseStatsAsync(string databaseName)
@@ -212,7 +401,6 @@ public class PostgreSqlProvider : IDatabaseProvider
         return ((int)row.TableCount, (long)row.TotalRows);
     }
 
-    // Detect PG 14+ last_call column once, then cache per provider instance
     private async Task<bool> SupportsLastCallAsync(string databaseName)
     {
         if (_hasLastCall.HasValue) return _hasLastCall.Value;
@@ -259,7 +447,6 @@ public class PostgreSqlProvider : IDatabaseProvider
 
     private static string? ExtractPrimaryTable(string sql)
     {
-        // PostgreSQL uses "schema"."table" or schema.table
         var patterns = new[]
         {
             @"(?:FROM|JOIN)\s+""?(\w+)""?\.""?(\w+)""?",

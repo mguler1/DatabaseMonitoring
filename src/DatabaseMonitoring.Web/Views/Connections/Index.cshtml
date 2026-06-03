@@ -20,6 +20,10 @@
     .test-ok   { background:#052e16; border:1px solid #166534; color:#86efac; }
     .test-err  { background:#450a0a; border:1px solid #7f1d1d; color:#fca5a5; }
     .badge-type { font-size:.68rem; padding:3px 8px; border-radius:20px; }
+    /* Modal */
+    .modal-content { background:#161b27; border:1px solid #2d3748; }
+    .modal-header { border-color:#2d3748; }
+    .modal-footer { border-color:#2d3748; }
 </style>
 
 <div class="d-flex align-items-center justify-content-between mb-4">
@@ -88,6 +92,11 @@
                                         title="Bağlantıyı Test Et">
                                     <i class="fas fa-bolt"></i>
                                 </button>
+                                <button class="btn btn-sm btn-outline-primary"
+                                        onclick="openEditModal('@c.Id')"
+                                        title="Düzenle">
+                                    <i class="fas fa-pencil-alt"></i>
+                                </button>
                                 <form asp-action="Toggle" method="post" class="d-inline">
                                     <input type="hidden" name="id" value="@c.Id" />
                                     <button type="submit" class="btn btn-sm btn-outline-secondary" title="@(c.IsActive ? "Devre Dışı Bırak" : "Etkinleştir")">
@@ -148,7 +157,6 @@
                 </div>
             </form>
 
-            <!-- Örnek connection string'ler -->
             <hr style="border-color:#2d3748; margin:1.2rem 0 1rem;" />
             <p class="text-secondary" style="font-size:.78rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em;">Örnek şablonlar</p>
             <div class="d-flex flex-column gap-2" id="templates">
@@ -175,8 +183,58 @@
     </div>
 </div>
 
+<!-- Düzenleme Modal -->
+<div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-light"><i class="fas fa-pencil-alt me-2 text-primary"></i>Bağlantıyı Düzenle</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form asp-action="Edit" method="post" id="editForm">
+                <div class="modal-body">
+                    <input type="hidden" name="id" id="editId" />
+
+                    <div class="mb-3">
+                        <label class="form-label">Bağlantı Adı</label>
+                        <input type="text" name="name" id="editName" class="form-control" required />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Veritabanı Tipi</label>
+                        <select name="type" id="editType" class="form-select">
+                            <option value="mssql">Microsoft SQL Server</option>
+                            <option value="postgresql">PostgreSQL</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Connection String</label>
+                        <textarea name="connectionString" id="editConnStr" class="form-control" rows="4"
+                                  required style="font-family:monospace; font-size:.82rem; resize:vertical;"></textarea>
+                    </div>
+
+                    <div class="test-result mb-1" id="editTestResult"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary"
+                            onclick="testEditConn()">
+                        <i class="fas fa-bolt me-1"></i>Test Et
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">İptal</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-save me-1"></i>Kaydet
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
 <script>
+    const _editModal = new bootstrap.Modal(document.getElementById('editModal'));
+
     function updatePlaceholder() {
         const type = document.getElementById('dbType').value;
         const ta = document.getElementById('connStr');
@@ -189,6 +247,29 @@
         const parent = el.closest('.template-item');
         document.getElementById('connStr').value = parent.dataset.val;
         document.getElementById('dbType').value = parent.dataset.type;
+    }
+
+    async function openEditModal(id) {
+        try {
+            const resp = await fetch('@Url.Action("GetConnection","Connections")' + '?id=' + id);
+            if (!resp.ok) { alert('Bağlantı bulunamadı.'); return; }
+            const data = await resp.json();
+            document.getElementById('editId').value = data.id;
+            document.getElementById('editName').value = data.name;
+            document.getElementById('editType').value = data.type;
+            document.getElementById('editConnStr').value = data.connectionString;
+            document.getElementById('editTestResult').style.display = 'none';
+            _editModal.show();
+        } catch(e) {
+            alert('Hata: ' + e.message);
+        }
+    }
+
+    async function testEditConn() {
+        const type = document.getElementById('editType').value;
+        const cs   = document.getElementById('editConnStr').value.trim();
+        const box  = document.getElementById('editTestResult');
+        await runTest(type, cs, box);
     }
 
     async function testNew() {

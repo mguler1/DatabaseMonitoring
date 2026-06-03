@@ -1,15 +1,37 @@
 @model DatabaseMonitoring.Web.Models.DatabaseDetailsViewModel
 @{
     ViewData["Title"] = $"{Model.Database.Name} — Dashboard";
-    var conn   = Model.Connection;
-    var db     = Model.Database;
-    var tables = Model.Tables.ToList();
-    var queries = Model.RecentQueries.ToList();
+    var conn     = Model.Connection;
+    var db       = Model.Database;
+    var tables   = Model.Tables.ToList();
+    var queries  = Model.RecentQueries.ToList();
+    var sessions = Model.ActiveSessions.ToList();
+    var longQ    = Model.LongRunningQueries.ToList();
+    var blocking = Model.BlockingQueries.ToList();
+    var indexes  = Model.Indexes.ToList();
+    var backups  = Model.BackupStatus.ToList();
+    var warnings = Model.WarningMessages;
 }
 
-<div class="d-flex align-items-center gap-3 mb-4">
-    <a asp-controller="Home" asp-action="Index"
-       class="btn btn-outline-secondary btn-sm flex-shrink-0">
+<style>
+    .warn-box { background:#451a03; border:1px solid #92400e; color:#fde68a; border-radius:8px; font-size:.82rem; padding:8px 12px; }
+    .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }
+    .dot-active { background:#22c55e; }
+    .dot-idle   { background:#64748b; }
+    .dot-blocked{ background:#ef4444; }
+    .dot-wait   { background:#f59e0b; }
+    .frag-low   { color:#22c55e; }
+    .frag-mid   { color:#f59e0b; }
+    .frag-high  { color:#ef4444; font-weight:700; }
+    .badge-backup-ok  { background:#052e16; color:#86efac; border:1px solid #166534; }
+    .badge-backup-err { background:#450a0a; color:#fca5a5; border:1px solid #7f1d1d; }
+    .badge-backup-na  { background:#1e2535; color:#64748b; border:1px solid #2d3748; }
+    .refresh-btn.active-refresh { background:#1d4ed8 !important; border-color:#3b82f6 !important; color:#fff !important; }
+</style>
+
+<!-- Header -->
+<div class="d-flex align-items-center gap-3 mb-4 flex-wrap">
+    <a asp-controller="Home" asp-action="Index" class="btn btn-outline-secondary btn-sm flex-shrink-0">
         <i class="fas fa-chevron-left me-1"></i>Seçim
     </a>
     <div style="overflow:hidden;">
@@ -25,40 +47,60 @@
         <small class="text-secondary">
             <i class="fas fa-server me-1"></i>@conn.Name
             @if (db.CreateDate.HasValue)
-            { <span>&nbsp;·&nbsp; Oluşturulma: @db.CreateDate.Value.ToString("dd MMM yyyy")</span> }
+            { <span>&nbsp;·&nbsp;Oluşturulma: @db.CreateDate.Value.ToString("dd MMM yyyy")</span> }
         </small>
     </div>
-    <div class="ms-auto flex-shrink-0">
-        <button class="btn btn-outline-primary btn-sm" onclick="location.reload()">
+    <div class="ms-auto d-flex gap-2 flex-shrink-0 flex-wrap">
+        <a asp-controller="Database" asp-action="ExportCsv"
+           asp-route-db="@db.Name" asp-route-connectionId="@conn.Id"
+           class="btn btn-outline-success btn-sm" title="Tablo listesini CSV olarak indir">
+            <i class="fas fa-file-csv me-1"></i>CSV İndir
+        </a>
+        <button id="autoRefreshBtn" class="btn btn-outline-primary btn-sm refresh-btn" onclick="toggleAutoRefresh()">
+            <i class="fas fa-sync-alt me-1"></i>Oto Yenile
+        </button>
+        <button class="btn btn-outline-secondary btn-sm" onclick="location.reload()">
             <i class="fas fa-sync-alt me-1"></i>Yenile
         </button>
     </div>
 </div>
 
-<!-- Metric kartlar -->
+<!-- Metric cards -->
 <div class="row g-3 mb-4">
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
             <div class="metric-value text-primary">@db.TableCount</div>
             <div class="metric-label">Tablo</div>
         </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
             <div class="metric-value text-warning">@db.TotalRows.ToString("N0")</div>
             <div class="metric-label">Toplam Kayıt</div>
         </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
             <div class="metric-value text-success">@db.SizeMB.ToString("N1") <small class="fs-6">MB</small></div>
-            <div class="metric-label">Toplam Boyut</div>
+            <div class="metric-label">Boyut</div>
         </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
-            <div class="metric-value text-info">@queries.Count</div>
-            <div class="metric-label">Son Sorgular</div>
+            <div class="metric-value @(sessions.Count > 0 ? "text-info" : "text-secondary")">@sessions.Count</div>
+            <div class="metric-label">Aktif Oturum</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl">
+        <div class="card p-3 text-center">
+            <div class="metric-value @(blocking.Count > 0 ? "text-danger" : "text-secondary")">@blocking.Count</div>
+            <div class="metric-label">Blocking</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3 col-xl">
+        <div class="card p-3 text-center">
+            <div class="metric-value @(longQ.Count > 0 ? "text-warning" : "text-secondary")">@longQ.Count</div>
+            <div class="metric-label">Uzun Sorgu</div>
         </div>
     </div>
 </div>
@@ -70,11 +112,48 @@
     </div>
 }
 
-<!-- Sekmeler -->
-<ul class="nav nav-tabs mb-0" role="tablist">
+<!-- Tabs -->
+<ul class="nav nav-tabs mb-0 flex-wrap" role="tablist">
     <li class="nav-item">
         <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabTables" type="button">
             <i class="fas fa-table me-1"></i>Tablolar <span class="badge bg-secondary ms-1">@tables.Count</span>
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabSessions" type="button">
+            <i class="fas fa-users me-1"></i>Oturumlar
+            @if (sessions.Count > 0)
+            {
+                <span class="badge bg-info ms-1">@sessions.Count</span>
+            }
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabLongQueries" type="button">
+            <i class="fas fa-hourglass-half me-1"></i>Uzun Sorgular
+            @if (longQ.Count > 0)
+            {
+                <span class="badge bg-warning text-dark ms-1">@longQ.Count</span>
+            }
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabBlocking" type="button">
+            <i class="fas fa-ban me-1"></i>Blocking
+            @if (blocking.Count > 0)
+            {
+                <span class="badge bg-danger ms-1">@blocking.Count</span>
+            }
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabIndexes" type="button">
+            <i class="fas fa-layer-group me-1"></i>İndeksler <span class="badge bg-secondary ms-1">@indexes.Count</span>
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabBackup" type="button">
+            <i class="fas fa-save me-1"></i>Yedekleme
         </button>
     </li>
     <li class="nav-item">
@@ -117,7 +196,11 @@
                             {
                                 var pct = maxMb > 0 ? (int)(t.TotalSpaceMB / maxMb * 100) : 0;
                                 <tr>
-                                    <td><span class="fw-semibold text-light">@t.TableName</span></td>
+                                    <td>
+                                        <span class="fw-semibold text-light" style="cursor:pointer;" onclick="showColumns('@db.Name','@t.TableName','@t.SchemaName','@conn.Id')" title="Sütunları gör">
+                                            <i class="fas fa-columns me-1 text-secondary" style="font-size:.75rem;"></i>@t.TableName
+                                        </span>
+                                    </td>
                                     <td><span class="text-secondary small">@t.SchemaName</span></td>
                                     <td class="text-end">
                                         <span class="@(t.RowCount > 1_000_000 ? "text-warning fw-bold" : "")">@t.RowCount.ToString("N0")</span>
@@ -148,7 +231,7 @@
                                            asp-route-db="@db.Name"
                                            asp-route-table="@t.TableName"
                                            asp-route-connectionId="@conn.Id"
-                                           class="btn btn-sm btn-outline-primary py-0 px-2">
+                                           class="btn btn-sm btn-outline-primary py-0 px-2" title="Bu tablonun sorgularını gör">
                                             <i class="fas fa-search"></i>
                                         </a>
                                     </td>
@@ -161,10 +244,370 @@
         </div>
     </div>
 
+    <!-- AKTİF OTURUMLAR -->
+    <div class="tab-pane fade" id="tabSessions">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body p-0">
+                @if (warnings.ContainsKey("ActiveSessions"))
+                {
+                    <div class="warn-box m-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["ActiveSessions"]</div>
+                }
+                @if (sessions.Any())
+                {
+                    <div class="table-responsive">
+                        <table id="tblSessions" class="table table-hover mb-0 w-100">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Kullanıcı</th>
+                                    <th>Host</th>
+                                    <th>Veritabanı</th>
+                                    <th>Durum</th>
+                                    <th>Komut</th>
+                                    <th class="text-end">CPU (ms)</th>
+                                    <th class="text-end">Bellek (KB)</th>
+                                    <th>Bağlantı Zamanı</th>
+                                    <th>Uygulama</th>
+                                    <th>Blocking</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var s in sessions)
+                                {
+                                    var dotClass = s.BlockingSessionId > 0 ? "dot-blocked"
+                                                 : s.Status?.ToLower() == "running" ? "dot-active"
+                                                 : "dot-idle";
+                                    <tr>
+                                        <td><span class="text-secondary small">@s.SessionId</span></td>
+                                        <td><span class="fw-semibold">@(s.LoginName ?? "—")</span></td>
+                                        <td><small class="text-secondary">@(s.HostName ?? "—")</small></td>
+                                        <td><small>@(s.DatabaseName ?? "—")</small></td>
+                                        <td>
+                                            <span class="status-dot @dotClass"></span>
+                                            <small>@(s.Status ?? "—")</small>
+                                        </td>
+                                        <td><small class="text-info">@(s.Command ?? "—")</small></td>
+                                        <td class="text-end"><small>@(s.CpuTime?.ToString("N0") ?? "—")</small></td>
+                                        <td class="text-end"><small>@(s.MemoryUsageKB?.ToString("N0") ?? "—")</small></td>
+                                        <td class="text-nowrap"><small class="text-secondary">@(s.LoginTime?.ToString("dd.MM.yy HH:mm") ?? "—")</small></td>
+                                        <td style="max-width:160px;"><small class="text-secondary text-truncate d-block" title="@s.ProgramName">@(s.ProgramName ?? "—")</small></td>
+                                        <td>
+                                            @if (s.BlockingSessionId > 0)
+                                            {
+                                                <span class="badge bg-danger">Blok: @s.BlockingSessionId</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-secondary">—</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-users fa-2x mb-2 d-block opacity-40"></i>
+                        <span>@(warnings.ContainsKey("ActiveSessions") ? "Aktif oturum bilgisi alınamadı." : "Aktif kullanıcı oturumu yok.")</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- UZUN SÜREN SORGULAR -->
+    <div class="tab-pane fade" id="tabLongQueries">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body p-0">
+                @if (warnings.ContainsKey("LongRunningQueries"))
+                {
+                    <div class="warn-box m-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["LongRunningQueries"]</div>
+                }
+                @if (longQ.Any())
+                {
+                    <div class="table-responsive">
+                        <table id="tblLongQ" class="table table-hover mb-0 w-100">
+                            <thead>
+                                <tr>
+                                    <th>Oturum ID</th>
+                                    <th>Kullanıcı</th>
+                                    <th>Veritabanı</th>
+                                    <th>Durum</th>
+                                    <th class="text-end">Süre (sn)</th>
+                                    <th class="text-end">CPU (ms)</th>
+                                    <th class="text-end">Logical Reads</th>
+                                    <th>Bekleme Tipi</th>
+                                    <th>Blocking</th>
+                                    <th>SQL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var q in longQ)
+                                {
+                                    <tr>
+                                        <td><span class="text-secondary">@q.SessionId</span></td>
+                                        <td><span class="fw-semibold">@(q.LoginName ?? "—")</span></td>
+                                        <td><small>@(q.DatabaseName ?? "—")</small></td>
+                                        <td><small class="text-info">@(q.Status ?? "—")</small></td>
+                                        <td class="text-end">
+                                            <span class="@(q.ElapsedSeconds > 300 ? "text-danger fw-bold" : q.ElapsedSeconds > 60 ? "text-warning" : "text-success")">
+                                                @q.ElapsedSeconds.ToString("N0")
+                                            </span>
+                                        </td>
+                                        <td class="text-end text-secondary"><small>@(q.CpuTime?.ToString("N0") ?? "—")</small></td>
+                                        <td class="text-end text-secondary"><small>@(q.LogicalReads?.ToString("N0") ?? "—")</small></td>
+                                        <td><small class="text-warning">@(q.WaitType ?? "—")</small></td>
+                                        <td>
+                                            @if (q.BlockingSessionId > 0)
+                                            {
+                                                <span class="badge bg-danger">Blok: @q.BlockingSessionId</span>
+                                            }
+                                            else { <span class="text-secondary">—</span> }
+                                        </td>
+                                        <td style="max-width:320px;">
+                                            <div class="query-text small" style="max-height:60px;overflow-y:auto;">
+                                                @(q.QueryText != null && q.QueryText.Length > 200 ? q.QueryText[..200] + "…" : q.QueryText ?? "—")
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-hourglass-half fa-2x mb-2 d-block opacity-40"></i>
+                        <span>@(warnings.ContainsKey("LongRunningQueries") ? "Uzun sorgu bilgisi alınamadı." : "30 saniyeden uzun çalışan sorgu yok.")</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- BLOCKING -->
+    <div class="tab-pane fade" id="tabBlocking">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body p-0">
+                @if (warnings.ContainsKey("BlockingQueries"))
+                {
+                    <div class="warn-box m-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["BlockingQueries"]</div>
+                }
+                @if (blocking.Any())
+                {
+                    <div class="table-responsive">
+                        <table id="tblBlocking" class="table table-hover mb-0 w-100">
+                            <thead>
+                                <tr>
+                                    <th>Blok. Oturum</th>
+                                    <th>Bloklayan</th>
+                                    <th>Blok. Kullanıcı</th>
+                                    <th>Bloklayan Kullanıcı</th>
+                                    <th>Veritabanı</th>
+                                    <th>Bekleme Tipi</th>
+                                    <th class="text-end">Bekleme (ms)</th>
+                                    <th>Blok. Sorgu</th>
+                                    <th>Bloklayan Sorgu</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var b in blocking)
+                                {
+                                    <tr>
+                                        <td><span class="badge bg-danger">@b.BlockedSessionId</span></td>
+                                        <td><span class="badge bg-warning text-dark">@b.BlockingSessionId</span></td>
+                                        <td><small>@(b.BlockedLogin ?? "—")</small></td>
+                                        <td><small class="text-warning">@(b.BlockingLogin ?? "—")</small></td>
+                                        <td><small>@(b.DatabaseName ?? "—")</small></td>
+                                        <td><small class="text-warning">@(b.WaitType ?? "—")</small></td>
+                                        <td class="text-end text-danger fw-bold">@b.WaitTimeMs.ToString("N0")</td>
+                                        <td style="max-width:240px;">
+                                            <div class="query-text small" style="max-height:60px;overflow-y:auto;">
+                                                @(b.BlockedQuery != null && b.BlockedQuery.Length > 150 ? b.BlockedQuery[..150] + "…" : b.BlockedQuery ?? "—")
+                                            </div>
+                                        </td>
+                                        <td style="max-width:240px;">
+                                            <div class="query-text small" style="max-height:60px;overflow-y:auto;">
+                                                @(b.BlockingQuery != null && b.BlockingQuery.Length > 150 ? b.BlockingQuery[..150] + "…" : b.BlockingQuery ?? "—")
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-ban fa-2x mb-2 d-block opacity-40"></i>
+                        <span>@(warnings.ContainsKey("BlockingQueries") ? "Blocking bilgisi alınamadı." : "Aktif blocking durumu yok.")</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- İNDEKSLER -->
+    <div class="tab-pane fade" id="tabIndexes">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body p-0">
+                @if (warnings.ContainsKey("Indexes"))
+                {
+                    <div class="warn-box m-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["Indexes"]</div>
+                }
+                @if (indexes.Any())
+                {
+                    <div class="table-responsive">
+                        <table id="tblIndexes" class="table table-hover mb-0 w-100">
+                            <thead>
+                                <tr>
+                                    <th>Tablo</th>
+                                    <th>Şema</th>
+                                    <th>İndeks</th>
+                                    <th>Tip</th>
+                                    <th>Kolonlar</th>
+                                    <th class="text-end">Frag. %</th>
+                                    <th class="text-end">Sayfa</th>
+                                    <th class="text-end">Seek</th>
+                                    <th class="text-end">Scan</th>
+                                    <th class="text-end">Update</th>
+                                    <th>Son Seek</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var idx in indexes)
+                                {
+                                    var fragClass = idx.FragmentationPct >= 30 ? "frag-high"
+                                                  : idx.FragmentationPct >= 10 ? "frag-mid"
+                                                  : "frag-low";
+                                    <tr>
+                                        <td><span class="fw-semibold text-light">@idx.TableName</span></td>
+                                        <td><small class="text-secondary">@idx.SchemaName</small></td>
+                                        <td>
+                                            <span class="@(idx.IsPrimaryKey ? "text-warning" : "")">@idx.IndexName</span>
+                                            @if (idx.IsPrimaryKey) { <span class="badge bg-warning text-dark ms-1" style="font-size:.6rem;">PK</span> }
+                                            @if (idx.IsUnique && !idx.IsPrimaryKey) { <span class="badge bg-info ms-1" style="font-size:.6rem;">UQ</span> }
+                                        </td>
+                                        <td><small class="text-secondary">@idx.IndexType</small></td>
+                                        <td style="max-width:200px;"><small class="text-secondary text-truncate d-block" title="@idx.Columns">@(idx.Columns ?? "—")</small></td>
+                                        <td class="text-end"><span class="@fragClass">@idx.FragmentationPct.ToString("N1")%</span></td>
+                                        <td class="text-end text-secondary"><small>@idx.PageCount.ToString("N0")</small></td>
+                                        <td class="text-end text-info"><small>@idx.UserSeeks.ToString("N0")</small></td>
+                                        <td class="text-end text-secondary"><small>@idx.UserScans.ToString("N0")</small></td>
+                                        <td class="text-end text-secondary"><small>@idx.UserUpdates.ToString("N0")</small></td>
+                                        <td class="text-nowrap"><small class="text-secondary">@(idx.LastUserSeek?.ToString("dd.MM.yy HH:mm") ?? "—")</small></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-layer-group fa-2x mb-2 d-block opacity-40"></i>
+                        <span>@(warnings.ContainsKey("Indexes") ? "İndeks bilgisi alınamadı." : "İndeks bulunamadı.")</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- YEDEKLEME -->
+    <div class="tab-pane fade" id="tabBackup">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body">
+                @if (warnings.ContainsKey("BackupStatus"))
+                {
+                    <div class="warn-box mb-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["BackupStatus"]</div>
+                }
+                @if (backups.Any())
+                {
+                    <div class="row g-3">
+                        @foreach (var bk in backups)
+                        {
+                            var hasDate = bk.LastBackupDate.HasValue;
+                            var daysSince = hasDate ? (DateTime.Now - bk.LastBackupDate!.Value).TotalDays : double.MaxValue;
+                            var badgeClass = !hasDate ? "badge-backup-na"
+                                           : daysSince > 7 ? "badge-backup-err"
+                                           : "badge-backup-ok";
+                            var icon = bk.BackupType == "Full" ? "fa-database"
+                                     : bk.BackupType == "Differential" ? "fa-code-branch"
+                                     : bk.BackupType == "Log" ? "fa-scroll"
+                                     : "fa-archive";
+                            <div class="col-12 col-md-6 col-lg-4">
+                                <div class="card p-3">
+                                    <div class="d-flex align-items-center gap-3 mb-2">
+                                        <div class="rounded p-2" style="background:#1e2535;">
+                                            <i class="fas @icon text-primary"></i>
+                                        </div>
+                                        <div>
+                                            <div class="fw-bold text-light">@bk.BackupType Backup</div>
+                                            <span class="badge @badgeClass" style="font-size:.68rem;">@bk.Status</span>
+                                        </div>
+                                    </div>
+                                    <div class="db-stat d-flex justify-content-between py-2 border-bottom" style="border-color:#1e2535;">
+                                        <span class="text-secondary small">Son Yedek</span>
+                                        <span class="text-light small fw-semibold">
+                                            @(bk.LastBackupDate?.ToString("dd.MM.yyyy HH:mm") ?? "—")
+                                        </span>
+                                    </div>
+                                    @if (hasDate)
+                                    {
+                                        <div class="d-flex justify-content-between py-2 border-bottom" style="border-color:#1e2535;">
+                                            <span class="text-secondary small">Geçen Süre</span>
+                                            <span class="small @(daysSince > 7 ? "text-danger" : daysSince > 1 ? "text-warning" : "text-success")">
+                                                @(daysSince < 1 ? $"{(int)(daysSince * 24)} saat önce" : $"{(int)daysSince} gün önce")
+                                            </span>
+                                        </div>
+                                    }
+                                    @if (bk.BackupSizeMB > 0)
+                                    {
+                                        <div class="d-flex justify-content-between py-2 border-bottom" style="border-color:#1e2535;">
+                                            <span class="text-secondary small">Boyut</span>
+                                            <span class="text-success small">@bk.BackupSizeMB.ToString("N1") MB</span>
+                                        </div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(bk.BackupPath) && bk.BackupPath != "—")
+                                    {
+                                        <div class="py-2">
+                                            <span class="text-secondary small">Konum:</span>
+                                            <div class="query-text" style="font-size:.72rem;word-break:break-all;margin-top:2px;">@bk.BackupPath</div>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-save fa-2x mb-2 d-block opacity-40"></i>
+                        <span>@(warnings.ContainsKey("BackupStatus") ? "Yedekleme bilgisi alınamadı." : "Yedekleme kaydı bulunamadı.")</span>
+                        @if (conn.Type == "postgresql")
+                        {
+                            <div class="small mt-2 opacity-60">PostgreSQL için WAL arşivleme etkin değil veya pg_stat_archiver erişimi yok.</div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
     <!-- SON SQL -->
     <div class="tab-pane fade" id="tabQueries">
         <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
             <div class="card-body p-0">
+                @if (warnings.ContainsKey("RecentQueries"))
+                {
+                    <div class="warn-box m-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["RecentQueries"]</div>
+                }
                 @if (queries.Any())
                 {
                     <div class="table-responsive">
@@ -229,17 +672,75 @@
 
 </div>
 
+<!-- Sütun Detay Modal -->
+<div class="modal fade" id="columnsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content" style="background:#161b27;border:1px solid #2d3748;">
+            <div class="modal-header" style="border-color:#2d3748;">
+                <h5 class="modal-title text-light">
+                    <i class="fas fa-columns me-2 text-primary"></i>
+                    <span id="modalTableName">Sütunlar</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-0">
+                <div id="columnsLoading" class="p-4 text-center text-secondary">
+                    <i class="fas fa-spinner fa-spin fa-2x mb-2 d-block"></i>Yükleniyor...
+                </div>
+                <div id="columnsContent" class="d-none">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0 w-100">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Kolon Adı</th>
+                                    <th>Tip</th>
+                                    <th>Nullable</th>
+                                    <th>PK</th>
+                                    <th>FK</th>
+                                    <th>Identity</th>
+                                    <th>Varsayılan</th>
+                                </tr>
+                            </thead>
+                            <tbody id="columnRows"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="columnsError" class="d-none warn-box m-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
 <script>
+    // DataTables
     $('#tblTables').DataTable({
         pageLength: 25, order: [[3,'desc']],
         language: { search:'Ara:', lengthMenu:'_MENU_ kayıt', info:'_TOTAL_ tablodan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Tablo yok', zeroRecords:'Eşleşen yok' }
+    });
+    $('#tblSessions').DataTable({
+        pageLength: 25, order: [[4,'asc']],
+        language: { search:'Ara:', lengthMenu:'_MENU_ oturum', info:'_TOTAL_ oturumdan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Oturum yok', zeroRecords:'Eşleşen yok' }
+    });
+    $('#tblLongQ').DataTable({
+        pageLength: 25, order: [[4,'desc']],
+        language: { search:'Ara:', lengthMenu:'_MENU_ sorgu', info:'_TOTAL_ sorgudan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Sorgu yok', zeroRecords:'Eşleşen yok' }
+    });
+    $('#tblBlocking').DataTable({
+        pageLength: 25, order: [[6,'desc']],
+        language: { search:'Ara:', lengthMenu:'_MENU_ kayıt', info:'_TOTAL_ kayıttan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Blocking yok', zeroRecords:'Eşleşen yok' }
+    });
+    $('#tblIndexes').DataTable({
+        pageLength: 25, order: [[5,'desc']],
+        language: { search:'Ara:', lengthMenu:'_MENU_ indeks', info:'_TOTAL_ indeksten _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'İndeks yok', zeroRecords:'Eşleşen yok' }
     });
     $('#tblQueries').DataTable({
         pageLength: 25, order: [[0,'desc']],
         language: { search:'Ara:', lengthMenu:'_MENU_ sorgu', info:'_TOTAL_ sorgudan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Sorgu yok', zeroRecords:'Eşleşen yok' }
     });
 
+    // Grafikler
     const top20 = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
         tables.Take(20).Select(t => new { name = t.TableName, mb = Math.Round(t.TotalSpaceMB,2), rows = t.RowCount })
     ));
@@ -252,12 +753,70 @@
         data:{ labels:top20.map(t=>t.name), datasets:[{ label:'MB', data:top20.map(t=>t.mb), backgroundColor:colors, borderRadius:4 }] },
         options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}}, scales:{ x:{ticks:{color:'#94a3b8'},grid:{color:'#1e2535'}}, y:{ticks:{color:'#94a3b8',font:{size:11}},grid:{display:false}} } }
     });
-
     const top10 = top20.slice(0,10);
     new Chart(document.getElementById('tableRowChart'), {
         type:'doughnut',
         data:{ labels:top10.map(t=>t.name), datasets:[{ data:top10.map(t=>t.rows), backgroundColor:colors, borderWidth:2, borderColor:'#0f1117' }] },
         options:{ responsive:true, plugins:{ legend:{ position:'bottom', labels:{ color:'#94a3b8', boxWidth:10, font:{size:10} } } } }
     });
+
+    // Otomatik yenileme
+    let _refreshTimer = null;
+    const _refreshSec = 30;
+
+    function toggleAutoRefresh() {
+        const btn = document.getElementById('autoRefreshBtn');
+        if (_refreshTimer) {
+            clearInterval(_refreshTimer);
+            _refreshTimer = null;
+            btn.classList.remove('active-refresh');
+        } else {
+            _refreshTimer = setInterval(() => location.reload(), _refreshSec * 1000);
+            btn.classList.add('active-refresh');
+        }
+    }
+
+    // Sütun detayları
+    const _colsModal = new bootstrap.Modal(document.getElementById('columnsModal'));
+
+    async function showColumns(db, table, schema, connectionId) {
+        document.getElementById('modalTableName').textContent = `${schema}.${table}`;
+        document.getElementById('columnsLoading').classList.remove('d-none');
+        document.getElementById('columnsContent').classList.add('d-none');
+        document.getElementById('columnsError').classList.add('d-none');
+        _colsModal.show();
+
+        try {
+            const url = '@Url.Action("GetColumns","Database")' +
+                `?db=${encodeURIComponent(db)}&table=${encodeURIComponent(table)}&schema=${encodeURIComponent(schema)}&connectionId=${encodeURIComponent(connectionId)}`;
+            const resp = await fetch(url);
+            const data = await resp.json();
+
+            if (data.error) {
+                document.getElementById('columnsError').textContent = data.error;
+                document.getElementById('columnsError').classList.remove('d-none');
+            } else {
+                const tbody = document.getElementById('columnRows');
+                tbody.innerHTML = data.map(c => `
+                    <tr>
+                        <td class="text-secondary small">${c.ordinalPosition}</td>
+                        <td class="fw-semibold text-light">${c.columnName}</td>
+                        <td class="text-info small">${c.dataType}</td>
+                        <td>${c.isNullable ? '<span class="badge bg-secondary">NULL</span>' : '<span class="badge bg-primary">NOT NULL</span>'}</td>
+                        <td>${c.isPrimaryKey ? '<span class="badge bg-warning text-dark">PK</span>' : '—'}</td>
+                        <td>${c.isForeignKey ? '<span class="badge bg-info">FK</span>' : '—'}</td>
+                        <td>${c.isIdentity ? '<span class="badge bg-success">ID</span>' : '—'}</td>
+                        <td class="text-secondary small">${c.defaultValue ?? '—'}</td>
+                    </tr>
+                `).join('');
+                document.getElementById('columnsContent').classList.remove('d-none');
+            }
+        } catch (e) {
+            document.getElementById('columnsError').textContent = 'İstek başarısız: ' + e.message;
+            document.getElementById('columnsError').classList.remove('d-none');
+        } finally {
+            document.getElementById('columnsLoading').classList.add('d-none');
+        }
+    }
 </script>
 }

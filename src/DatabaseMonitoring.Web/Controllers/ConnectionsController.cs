@@ -42,6 +42,30 @@ public class ConnectionsController : Controller
         return RedirectToAction(nameof(Index));
     }
 
+    [HttpGet]
+    public IActionResult GetConnection(string id)
+    {
+        var entry = _store.GetById(id);
+        if (entry == null) return NotFound();
+        return Json(new { entry.Id, entry.Name, entry.Type, entry.ConnectionString });
+    }
+
+    [HttpPost]
+    public IActionResult Edit(string id, string name, string type, string connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(connectionString))
+        {
+            TempData["Error"] = "Ad ve bağlantı dizesi zorunludur.";
+            return RedirectToAction(nameof(Index));
+        }
+
+        var updated = _store.Update(id, name, type ?? "mssql", connectionString);
+        if (!updated) return NotFound();
+
+        TempData["Success"] = $"'{name}' bağlantısı güncellendi.";
+        return RedirectToAction(nameof(Index));
+    }
+
     [HttpPost]
     public IActionResult Delete(string id)
     {
