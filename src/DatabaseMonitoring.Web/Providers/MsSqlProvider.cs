@@ -87,20 +87,35 @@ public class MsSqlProvider : IDatabaseProvider
         var quotedDb = QuoteIdentifier(databaseName);
         var sql = $"""
             USE {quotedDb};
+            WITH RowCounts AS (
+                -- Kayıt sayısı yalnızca heap/clustered index (index_id <= 1) üzerinden hesaplanmalı;
+                -- aksi halde her nonclustered index tablonun kaydını bir kez daha sayar.
+                SELECT p.object_id, SUM(p.rows) AS [RowCount]
+                FROM sys.partitions p
+                WHERE p.index_id <= 1
+                GROUP BY p.object_id
+            ),
+            SpaceUsage AS (
+                -- Alan hesabı için tüm index'lerin depolaması dahil edilir — bu doğru, çünkü
+                -- her index gerçekten kendi sayfalarını kullanır.
+                SELECT p.object_id,
+                       SUM(a.total_pages) AS TotalPages,
+                       SUM(a.used_pages)  AS UsedPages
+                FROM sys.partitions p
+                INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+                GROUP BY p.object_id
+            )
             SELECT
-                t.name                                    AS TableName,
-                s.name                                    AS SchemaName,
-                ISNULL(SUM(p.rows), 0)                      AS [RowCount],
-                ISNULL(SUM(a.total_pages) * 8.0 / 1024, 0) AS [TotalSpaceMB],
-                ISNULL(SUM(a.used_pages)  * 8.0 / 1024, 0) AS [UsedSpaceMB]
+                t.name                                      AS TableName,
+                s.name                                       AS SchemaName,
+                ISNULL(rc.[RowCount], 0)                     AS [RowCount],
+                ISNULL(su.TotalPages, 0) * 8.0 / 1024        AS [TotalSpaceMB],
+                ISNULL(su.UsedPages, 0)  * 8.0 / 1024        AS [UsedSpaceMB]
             FROM sys.tables t
-            INNER JOIN sys.schemas s     ON t.schema_id    = s.schema_id
-            INNER JOIN sys.indexes i     ON t.object_id    = i.object_id
-            INNER JOIN sys.partitions p  ON i.object_id    = p.object_id
-                                        AND i.index_id     = p.index_id
-            INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+            LEFT JOIN RowCounts  rc ON rc.object_id = t.object_id
+            LEFT JOIN SpaceUsage su ON su.object_id = t.object_id
             WHERE t.is_ms_shipped = 0
-            GROUP BY t.name, s.name
             ORDER BY [TotalSpaceMB] DESC, [RowCount] DESC
             """;
 
@@ -116,7 +131,7 @@ public class MsSqlProvider : IDatabaseProvider
                 if (lastQueries.TryGetValue(key, out var q))
                 {
                     table.LastQueryTime = q.LastExecutionTime;
-                    table.LastQueryText = TrimQuery(q.QueryText, 120);
+                    table.LastQueryText = SqlTextHelper.TrimQuery(q.QueryText, 120);
                 }
                 table.DatabaseName = databaseName;
             }
@@ -147,10 +162,17 @@ public class MsSqlProvider : IDatabaseProvider
                          ELSE qs.statement_end_offset
                      END - qs.statement_start_offset) / 2 + 1
                 )                                                                  AS QueryText,
-                DB_NAME(st.dbid)                                                   AS DatabaseName
+                DB_NAME(pa.dbid)                                                   AS DatabaseName
             FROM sys.dm_exec_query_stats qs
             CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-            WHERE st.dbid = DB_ID(@DatabaseName)
+            CROSS APPLY (
+                -- st.dbid; sp_executesql ile (parametreli — Dapper/EF/ADO.NET varsayılanı) çalıştırılan
+                -- sorgularda genelde NULL döner. plan_handle üzerinden okumak güvenilir olandır.
+                SELECT CAST(value AS int) AS dbid
+                FROM sys.dm_exec_plan_attributes(qs.plan_handle)
+                WHERE attribute = 'dbid'
+            ) pa
+            WHERE pa.dbid = DB_ID(@DatabaseName)
               AND st.text NOT LIKE '%dm_exec_query_stats%'
             ORDER BY qs.last_execution_time DESC
             """;
@@ -176,10 +198,15 @@ public class MsSqlProvider : IDatabaseProvider
                          ELSE qs.statement_end_offset
                      END - qs.statement_start_offset) / 2 + 1
                 )                                                                  AS QueryText,
-                DB_NAME(st.dbid)                                                   AS DatabaseName
+                DB_NAME(pa.dbid)                                                   AS DatabaseName
             FROM sys.dm_exec_query_stats qs
             CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-            WHERE st.dbid = DB_ID(@DatabaseName)
+            CROSS APPLY (
+                SELECT CAST(value AS int) AS dbid
+                FROM sys.dm_exec_plan_attributes(qs.plan_handle)
+                WHERE attribute = 'dbid'
+            ) pa
+            WHERE pa.dbid = DB_ID(@DatabaseName)
               AND st.text LIKE '%' + @TableName + '%'
               AND st.text NOT LIKE '%dm_exec_query_stats%'
             ORDER BY qs.last_execution_time DESC
@@ -416,6 +443,68 @@ public class MsSqlProvider : IDatabaseProvider
         return await conn.QueryAsync<ColumnInfo>(sql, new { TableName = tableName, SchemaName = schemaName });
     }
 
+    public async Task<ServerMetrics> GetServerMetricsAsync()
+    {
+        var metrics = new ServerMetrics();
+
+        using var conn = new SqlConnection(_masterConnectionString);
+
+        const string sysInfoSql = """
+            SELECT
+                cpu_count                          AS CpuCount,
+                sqlserver_start_time                AS ServerStartTime,
+                physical_memory_kb / 1024.0         AS PhysicalMemoryTotalMB
+            FROM sys.dm_os_sys_info
+            """;
+        var sysInfo = await conn.QueryFirstOrDefaultAsync(sysInfoSql);
+        if (sysInfo != null)
+        {
+            metrics.CpuCount = (int)sysInfo.CpuCount;
+            metrics.ServerStartTime = (DateTime)sysInfo.ServerStartTime;
+            metrics.PhysicalMemoryTotalMB = (double)sysInfo.PhysicalMemoryTotalMB;
+        }
+
+        try
+        {
+            const string memSql = "SELECT physical_memory_in_use_kb / 1024.0 AS MemoryUsedMB FROM sys.dm_os_process_memory";
+            metrics.MemoryUsedMB = await conn.ExecuteScalarAsync<double?>(memSql);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read sys.dm_os_process_memory — VIEW SERVER STATE permission required");
+        }
+
+        try
+        {
+            metrics.Edition = await conn.ExecuteScalarAsync<string?>("SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(200))");
+            var ver = await conn.ExecuteScalarAsync<string?>("SELECT @@VERSION");
+            metrics.VersionInfo = ver?.Split('\n')[0].Trim();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read server version/edition");
+        }
+
+        try
+        {
+            const string volSql = """
+                SELECT DISTINCT
+                    vs.volume_mount_point AS VolumePath,
+                    vs.total_bytes / 1048576.0     AS TotalMB,
+                    vs.available_bytes / 1048576.0 AS FreeMB
+                FROM sys.master_files mf
+                CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) vs
+                """;
+            metrics.Volumes = (await conn.QueryAsync<DiskVolumeInfo>(volSql)).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read sys.dm_os_volume_stats — VIEW SERVER STATE permission required");
+        }
+
+        return metrics;
+    }
+
     // ---------- private helpers ----------
 
     private async Task<(int tableCount, long totalRows)> GetDatabaseStatsAsync(string databaseName)
@@ -445,45 +534,19 @@ public class MsSqlProvider : IDatabaseProvider
                 st.text                AS QueryText
             FROM sys.dm_exec_query_stats qs
             CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-            WHERE st.dbid = DB_ID(@DatabaseName)
+            CROSS APPLY (
+                SELECT CAST(value AS int) AS dbid
+                FROM sys.dm_exec_plan_attributes(qs.plan_handle)
+                WHERE attribute = 'dbid'
+            ) pa
+            WHERE pa.dbid = DB_ID(@DatabaseName)
               AND st.text NOT LIKE '%dm_exec_query_stats%'
             ORDER BY qs.last_execution_time DESC
             """;
 
         using var conn = new SqlConnection(_masterConnectionString);
         var rows = await conn.QueryAsync<QueryInfo>(sql, new { DatabaseName = databaseName });
-
-        var byTable = new Dictionary<string, QueryInfo>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in rows)
-        {
-            if (string.IsNullOrWhiteSpace(row.QueryText)) continue;
-            var key = ExtractPrimaryTable(row.QueryText);
-            if (key != null && !byTable.ContainsKey(key))
-                byTable[key] = row;
-        }
-        return byTable;
-    }
-
-    private static string? ExtractPrimaryTable(string sql)
-    {
-        var patterns = new[]
-        {
-            @"(?:FROM|JOIN)\s+\[?(\w+)\]?\.\[?(\w+)\]?",
-            @"(?:FROM|JOIN)\s+\[?(\w+)\]?(?!\s*\.)"
-        };
-
-        foreach (var pattern in patterns)
-        {
-            var m = System.Text.RegularExpressions.Regex.Match(
-                sql, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (m.Success)
-            {
-                return m.Groups.Count >= 3 && m.Groups[2].Success
-                    ? $"{m.Groups[1].Value}.{m.Groups[2].Value}"
-                    : $"dbo.{m.Groups[1].Value}";
-            }
-        }
-        return null;
+        return SqlTextHelper.BuildLastQueryPerTable(rows, "dbo");
     }
 
     private string BuildDbConnectionString(string databaseName)
@@ -497,7 +560,4 @@ public class MsSqlProvider : IDatabaseProvider
 
     private static string QuoteIdentifier(string name) =>
         "[" + name.Replace("]", "]]") + "]";
-
-    private static string TrimQuery(string text, int maxLen) =>
-        text.Length <= maxLen ? text : text[..maxLen] + "…";
 }

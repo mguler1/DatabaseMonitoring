@@ -10,6 +10,9 @@ public class DatabaseDetailsViewModel
     public IEnumerable<BlockingInfo> BlockingQueries { get; set; } = [];
     public IEnumerable<IndexInfo> Indexes { get; set; } = [];
     public IEnumerable<BackupInfo> BackupStatus { get; set; } = [];
+    public ServerMetrics? ServerMetrics { get; set; }
+    public List<AlertMessage> Alerts { get; set; } = [];
+    public int BackupStaleHours { get; set; } = 26;
     public ConnectionEntry Connection { get; set; } = new();
     public string? ErrorMessage { get; set; }
     public Dictionary<string, string> WarningMessages { get; set; } = [];

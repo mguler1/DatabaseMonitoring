@@ -106,7 +106,7 @@ public class PostgreSqlProvider : IDatabaseProvider
                 if (lastQueries.TryGetValue(key, out var q))
                 {
                     table.LastQueryTime = q.LastExecutionTime;
-                    table.LastQueryText = TrimQuery(q.QueryText, 120);
+                    table.LastQueryText = SqlTextHelper.TrimQuery(q.QueryText, 120);
                 }
                 table.DatabaseName = databaseName;
             }
@@ -384,6 +384,46 @@ public class PostgreSqlProvider : IDatabaseProvider
         return await conn.QueryAsync<ColumnInfo>(sql, new { TableName = tableName, SchemaName = schemaName });
     }
 
+    public async Task<ServerMetrics> GetServerMetricsAsync()
+    {
+        // PostgreSQL stok fonksiyonları işletim sistemi seviyesinde CPU/bellek/disk bilgisi vermez
+        // (bunun için pg_stat_file/ext dblink gibi ek izinler veya extension gerekir).
+        // Burada güvenli ve stok olarak sağlanabilen metrikler raporlanır; Volumes bilerek boş bırakılır.
+        var metrics = new ServerMetrics();
+
+        using var conn = new NpgsqlConnection(_maintenanceConnectionString);
+
+        try
+        {
+            metrics.ServerStartTime = await conn.ExecuteScalarAsync<DateTime?>("SELECT pg_postmaster_start_time()");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read pg_postmaster_start_time()");
+        }
+
+        try
+        {
+            metrics.VersionInfo = await conn.ExecuteScalarAsync<string?>("SELECT version()");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read version()");
+        }
+
+        try
+        {
+            var sharedBuffers = await conn.ExecuteScalarAsync<string?>("SHOW shared_buffers");
+            metrics.Edition = sharedBuffers != null ? $"shared_buffers: {sharedBuffers}" : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read shared_buffers setting");
+        }
+
+        return metrics;
+    }
+
     // ---------- private helpers ----------
 
     private async Task<(int tableCount, long totalRows)> GetDatabaseStatsAsync(string databaseName)
@@ -433,38 +473,7 @@ public class PostgreSqlProvider : IDatabaseProvider
 
         using var conn = new NpgsqlConnection(BuildDbConnectionString(databaseName));
         var rows = await conn.QueryAsync<QueryInfo>(sql);
-
-        var byTable = new Dictionary<string, QueryInfo>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in rows)
-        {
-            if (string.IsNullOrWhiteSpace(row.QueryText)) continue;
-            var key = ExtractPrimaryTable(row.QueryText);
-            if (key != null && !byTable.ContainsKey(key))
-                byTable[key] = row;
-        }
-        return byTable;
-    }
-
-    private static string? ExtractPrimaryTable(string sql)
-    {
-        var patterns = new[]
-        {
-            @"(?:FROM|JOIN)\s+""?(\w+)""?\.""?(\w+)""?",
-            @"(?:FROM|JOIN)\s+""?(\w+)""?(?!\s*\.)"
-        };
-
-        foreach (var pattern in patterns)
-        {
-            var m = System.Text.RegularExpressions.Regex.Match(
-                sql, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (m.Success)
-            {
-                return m.Groups.Count >= 3 && m.Groups[2].Success
-                    ? $"{m.Groups[1].Value}.{m.Groups[2].Value}"
-                    : $"public.{m.Groups[1].Value}";
-            }
-        }
-        return null;
+        return SqlTextHelper.BuildLastQueryPerTable(rows, "public");
     }
 
     private string BuildDbConnectionString(string databaseName)
@@ -475,7 +484,4 @@ public class PostgreSqlProvider : IDatabaseProvider
         };
         return builder.ConnectionString;
     }
-
-    private static string TrimQuery(string text, int maxLen) =>
-        text.Length <= maxLen ? text : text[..maxLen] + "…";
 }

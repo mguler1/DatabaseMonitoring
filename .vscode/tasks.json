@@ -36,6 +36,16 @@
             "/consoleloggerparameters:NoSummary;ForceNoAlign"
         ],
         "problemMatcher": "$msCompile"
+    },
+    {
+        "label": "test",
+        "command": "dotnet",
+        "type": "process",
+        "args": [
+            "test",
+            "${workspaceFolder}/tests/DatabaseMonitoring.Tests/DatabaseMonitoring.Tests.csproj"
+        ],
+        "problemMatcher": "$msCompile"
     }
   ]
 }

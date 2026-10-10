@@ -19,4 +19,5 @@ public interface IDatabaseProvider
     Task<IEnumerable<IndexInfo>> GetIndexInfoAsync(string databaseName);
     Task<IEnumerable<BackupInfo>> GetBackupStatusAsync(string databaseName);
     Task<IEnumerable<ColumnInfo>> GetColumnsAsync(string databaseName, string tableName, string schemaName = "dbo");
+    Task<ServerMetrics> GetServerMetricsAsync();
 }

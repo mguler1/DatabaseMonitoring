@@ -17,6 +17,7 @@ appsettings.Development.json
 appsettings.*.json
 !appsettings.json
 connections.json
+App_Data/
 
 # OS
 .DS_Store

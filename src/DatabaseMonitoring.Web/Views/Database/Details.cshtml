@@ -11,6 +11,8 @@
     var indexes  = Model.Indexes.ToList();
     var backups  = Model.BackupStatus.ToList();
     var warnings = Model.WarningMessages;
+    var alerts   = Model.Alerts;
+    var srv      = Model.ServerMetrics;
 }
 
 <style>
@@ -27,6 +29,10 @@
     .badge-backup-err { background:#450a0a; color:#fca5a5; border:1px solid #7f1d1d; }
     .badge-backup-na  { background:#1e2535; color:#64748b; border:1px solid #2d3748; }
     .refresh-btn.active-refresh { background:#1d4ed8 !important; border-color:#3b82f6 !important; color:#fff !important; }
+    .alert-critical { background:#450a0a; border:1px solid #7f1d1d; color:#fca5a5; border-radius:8px; padding:10px 14px; font-size:.85rem; }
+    .alert-warning  { background:#451a03; border:1px solid #92400e; color:#fde68a; border-radius:8px; padding:10px 14px; font-size:.85rem; }
+    .live-pulse { display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; margin-right:5px; animation:pulse-live 1.6s infinite; }
+    @@keyframes pulse-live { 0%,100%{opacity:1;} 50%{opacity:.3;} }
 </style>
 
 <!-- Header -->
@@ -51,19 +57,37 @@
         </small>
     </div>
     <div class="ms-auto d-flex gap-2 flex-shrink-0 flex-wrap">
-        <a asp-controller="Database" asp-action="ExportCsv"
-           asp-route-db="@db.Name" asp-route-connectionId="@conn.Id"
-           class="btn btn-outline-success btn-sm" title="Tablo listesini CSV olarak indir">
-            <i class="fas fa-file-csv me-1"></i>CSV İndir
-        </a>
+        <div class="dropdown">
+            <button class="btn btn-outline-success btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                <i class="fas fa-download me-1"></i>Dışa Aktar
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end" style="background:#161b27;border:1px solid #2d3748;">
+                <li><a class="dropdown-item text-light" asp-controller="Database" asp-action="ExportCsv" asp-route-db="@db.Name" asp-route-connectionId="@conn.Id"><i class="fas fa-file-csv me-2"></i>Tablolar (CSV)</a></li>
+                <li><a class="dropdown-item text-light" asp-controller="Database" asp-action="ExportJson" asp-route-db="@db.Name" asp-route-connectionId="@conn.Id"><i class="fas fa-file-code me-2"></i>Tablolar (JSON)</a></li>
+                <li><a class="dropdown-item text-light" asp-controller="Database" asp-action="ExportSessionsCsv" asp-route-connectionId="@conn.Id"><i class="fas fa-users me-2"></i>Oturumlar (CSV)</a></li>
+                <li><a class="dropdown-item text-light" asp-controller="Database" asp-action="ExportLongRunningCsv" asp-route-connectionId="@conn.Id"><i class="fas fa-hourglass-half me-2"></i>Uzun Sorgular (CSV)</a></li>
+            </ul>
+        </div>
         <button id="autoRefreshBtn" class="btn btn-outline-primary btn-sm refresh-btn" onclick="toggleAutoRefresh()">
-            <i class="fas fa-sync-alt me-1"></i>Oto Yenile
+            <i class="fas fa-sync-alt me-1"></i>Canlı Yenileme
         </button>
         <button class="btn btn-outline-secondary btn-sm" onclick="location.reload()">
             <i class="fas fa-sync-alt me-1"></i>Yenile
         </button>
     </div>
 </div>
+
+@if (alerts.Any())
+{
+    <div class="mb-4 d-flex flex-column gap-2">
+        @foreach (var a in alerts.OrderByDescending(a => a.Severity))
+        {
+            <div class="@(a.Severity == DatabaseMonitoring.Web.Models.AlertSeverity.Critical ? "alert-critical" : "alert-warning")">
+                <i class="fas @(a.Severity == DatabaseMonitoring.Web.Models.AlertSeverity.Critical ? "fa-circle-exclamation" : "fa-triangle-exclamation") me-2"></i>@a.Message
+            </div>
+        }
+    </div>
+}
 
 <!-- Metric cards -->
 <div class="row g-3 mb-4">
@@ -87,22 +111,25 @@
     </div>
     <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
-            <div class="metric-value @(sessions.Count > 0 ? "text-info" : "text-secondary")">@sessions.Count</div>
+            <div id="metricSessionCount" class="metric-value @(sessions.Count > 0 ? "text-info" : "text-secondary")">@sessions.Count</div>
             <div class="metric-label">Aktif Oturum</div>
         </div>
     </div>
     <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
-            <div class="metric-value @(blocking.Count > 0 ? "text-danger" : "text-secondary")">@blocking.Count</div>
+            <div id="metricBlockingCount" class="metric-value @(blocking.Count > 0 ? "text-danger" : "text-secondary")">@blocking.Count</div>
             <div class="metric-label">Blocking</div>
         </div>
     </div>
     <div class="col-6 col-md-3 col-xl">
         <div class="card p-3 text-center">
-            <div class="metric-value @(longQ.Count > 0 ? "text-warning" : "text-secondary")">@longQ.Count</div>
+            <div id="metricLongQCount" class="metric-value @(longQ.Count > 0 ? "text-warning" : "text-secondary")">@longQ.Count</div>
             <div class="metric-label">Uzun Sorgu</div>
         </div>
     </div>
+</div>
+<div id="liveIndicator" class="text-end small text-secondary mb-2 d-none">
+    <span class="live-pulse"></span>Canlı yenileme aktif — son güncelleme: <span id="liveTimestamp">—</span>
 </div>
 
 @if (Model.ErrorMessage != null)
@@ -164,6 +191,16 @@
     <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabChart" type="button">
             <i class="fas fa-chart-pie me-1"></i>Grafik
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabTrend" type="button" onclick="loadTrendChart()">
+            <i class="fas fa-chart-line me-1"></i>Trend
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabServer" type="button">
+            <i class="fas fa-server me-1"></i>Sunucu
         </button>
     </li>
 </ul>
@@ -368,7 +405,7 @@
                                             else { <span class="text-secondary">—</span> }
                                         </td>
                                         <td style="max-width:320px;">
-                                            <div class="query-text small" style="max-height:60px;overflow-y:auto;">
+                                            <div class="query-text small @(q.QueryText != null ? "sql-hover" : "")" style="max-height:60px;overflow-y:auto;@(q.QueryText != null ? "cursor:zoom-in;" : "")" data-full-sql="@q.QueryText" title="@(q.QueryText != null ? "Tam SQL'i görmek için üzerine gelin" : "")">
                                                 @(q.QueryText != null && q.QueryText.Length > 200 ? q.QueryText[..200] + "…" : q.QueryText ?? "—")
                                             </div>
                                         </td>
@@ -426,12 +463,12 @@
                                         <td><small class="text-warning">@(b.WaitType ?? "—")</small></td>
                                         <td class="text-end text-danger fw-bold">@b.WaitTimeMs.ToString("N0")</td>
                                         <td style="max-width:240px;">
-                                            <div class="query-text small" style="max-height:60px;overflow-y:auto;">
+                                            <div class="query-text small @(!string.IsNullOrEmpty(b.BlockedQuery) ? "sql-hover" : "")" style="max-height:60px;overflow-y:auto;@(!string.IsNullOrEmpty(b.BlockedQuery) ? "cursor:zoom-in;" : "")" data-full-sql="@b.BlockedQuery" title="@(!string.IsNullOrEmpty(b.BlockedQuery) ? "Tam SQL'i görmek için üzerine gelin" : "")">
                                                 @(b.BlockedQuery != null && b.BlockedQuery.Length > 150 ? b.BlockedQuery[..150] + "…" : b.BlockedQuery ?? "—")
                                             </div>
                                         </td>
                                         <td style="max-width:240px;">
-                                            <div class="query-text small" style="max-height:60px;overflow-y:auto;">
+                                            <div class="query-text small @(!string.IsNullOrEmpty(b.BlockingQuery) ? "sql-hover" : "")" style="max-height:60px;overflow-y:auto;@(!string.IsNullOrEmpty(b.BlockingQuery) ? "cursor:zoom-in;" : "")" data-full-sql="@b.BlockingQuery" title="@(!string.IsNullOrEmpty(b.BlockingQuery) ? "Tam SQL'i görmek için üzerine gelin" : "")">
                                                 @(b.BlockingQuery != null && b.BlockingQuery.Length > 150 ? b.BlockingQuery[..150] + "…" : b.BlockingQuery ?? "—")
                                             </div>
                                         </td>
@@ -533,8 +570,9 @@
                         {
                             var hasDate = bk.LastBackupDate.HasValue;
                             var daysSince = hasDate ? (DateTime.Now - bk.LastBackupDate!.Value).TotalDays : double.MaxValue;
+                            var staleDays = Model.BackupStaleHours / 24.0;
                             var badgeClass = !hasDate ? "badge-backup-na"
-                                           : daysSince > 7 ? "badge-backup-err"
+                                           : daysSince > staleDays ? "badge-backup-err"
                                            : "badge-backup-ok";
                             var icon = bk.BackupType == "Full" ? "fa-database"
                                      : bk.BackupType == "Differential" ? "fa-code-branch"
@@ -561,7 +599,7 @@
                                     {
                                         <div class="d-flex justify-content-between py-2 border-bottom" style="border-color:#1e2535;">
                                             <span class="text-secondary small">Geçen Süre</span>
-                                            <span class="small @(daysSince > 7 ? "text-danger" : daysSince > 1 ? "text-warning" : "text-success")">
+                                            <span class="small @(daysSince > staleDays ? "text-danger" : daysSince > 1 ? "text-warning" : "text-success")">
                                                 @(daysSince < 1 ? $"{(int)(daysSince * 24)} saat önce" : $"{(int)daysSince} gün önce")
                                             </span>
                                         </div>
@@ -630,7 +668,7 @@
                                         <td class="text-end text-info">@q.AvgElapsedMs.ToString("N0")</td>
                                         <td class="text-end text-secondary">@q.TotalElapsedMs.ToString("N0")</td>
                                         <td style="max-width:500px;">
-                                            <div class="query-text small" style="max-height:72px;overflow-y:auto;">
+                                            <div class="query-text small sql-hover" style="max-height:72px;overflow-y:auto;cursor:zoom-in;" data-full-sql="@q.QueryText" title="Tam SQL'i görmek için üzerine gelin">
                                                 @(q.QueryText.Length > 300 ? q.QueryText[..300] + "…" : q.QueryText)
                                             </div>
                                         </td>
@@ -666,6 +704,137 @@
                         <canvas id="tableRowChart" height="300"></canvas>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TREND -->
+    <div class="tab-pane fade" id="tabTrend">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <p class="section-title mb-0">Zaman İçindeki Değişim</p>
+                    <select id="trendRange" class="form-select form-select-sm" style="width:auto;background:#1e2535;border-color:#2d3748;color:#e2e8f0;" onchange="loadTrendChart()">
+                        <option value="6">Son 6 saat</option>
+                        <option value="24" selected>Son 24 saat</option>
+                        <option value="168">Son 7 gün</option>
+                        <option value="720">Son 30 gün</option>
+                    </select>
+                </div>
+                <div id="trendEmpty" class="p-4 text-center text-secondary d-none">
+                    <i class="fas fa-chart-line fa-2x mb-2 d-block opacity-40"></i>
+                    Henüz yeterli geçmiş veri toplanmadı. Arka plan toplayıcısı periyodik olarak çalışır.
+                </div>
+                <div id="trendCharts" class="row g-3">
+                    <div class="col-12 col-lg-6">
+                        <p class="section-title mb-2">Veritabanı Boyutu (MB)</p>
+                        <canvas id="trendSizeChart" height="220"></canvas>
+                    </div>
+                    <div class="col-12 col-lg-6">
+                        <p class="section-title mb-2">Oturum / Uzun Sorgu / Blocking</p>
+                        <canvas id="trendActivityChart" height="220"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SUNUCU -->
+    <div class="tab-pane fade" id="tabServer">
+        <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
+            <div class="card-body">
+                @if (warnings.ContainsKey("ServerMetrics"))
+                {
+                    <div class="warn-box mb-3"><i class="fas fa-exclamation-triangle me-2"></i>@warnings["ServerMetrics"]</div>
+                }
+                @if (srv != null)
+                {
+                    <div class="row g-3 mb-3">
+                        <div class="col-6 col-md-3">
+                            <div class="card p-3 text-center">
+                                <div class="metric-value text-primary">@(srv.CpuCount?.ToString() ?? "—")</div>
+                                <div class="metric-label">CPU Çekirdeği</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="card p-3 text-center">
+                                <div class="metric-value @(srv.MemoryUsedPct is > 85 ? "text-danger" : "text-success")">
+                                    @(srv.MemoryUsedPct.HasValue ? srv.MemoryUsedPct.Value.ToString("N0") + "%" : "—")
+                                </div>
+                                <div class="metric-label">Bellek Kullanımı</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="card p-3 text-center">
+                                <div class="metric-value text-info" style="font-size:1.1rem;">
+                                    @(srv.ServerStartTime.HasValue ? srv.ServerStartTime.Value.ToString("dd.MM.yyyy") : "—")
+                                </div>
+                                <div class="metric-label">Başlangıç Zamanı</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="card p-3 text-center">
+                                <div class="metric-value text-secondary" style="font-size:.95rem;">@(srv.Edition ?? "—")</div>
+                                <div class="metric-label">Sürüm / Edition</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(srv.VersionInfo))
+                    {
+                        <div class="query-text small p-2 mb-3" style="background:#0f1117;border-radius:6px;">@srv.VersionInfo</div>
+                    }
+
+                    @if (srv.Volumes.Any())
+                    {
+                        <p class="section-title mb-2">Disk Birimleri</p>
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0 w-100">
+                                <thead>
+                                    <tr>
+                                        <th>Birim</th>
+                                        <th class="text-end">Toplam (MB)</th>
+                                        <th class="text-end">Boş (MB)</th>
+                                        <th class="text-end">Boş %</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var vol in srv.Volumes)
+                                    {
+                                        <tr>
+                                            <td>@vol.VolumePath</td>
+                                            <td class="text-end">@vol.TotalMB.ToString("N0")</td>
+                                            <td class="text-end">@vol.FreeMB.ToString("N0")</td>
+                                            <td class="text-end">
+                                                <span class="@(vol.FreePct <= 10 ? "text-danger fw-bold" : vol.FreePct <= 20 ? "text-warning" : "text-success")">
+                                                    @vol.FreePct.ToString("N1")%
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="p-3 text-center text-secondary small">
+                            <i class="fas fa-hdd me-1 opacity-40"></i>
+                            Disk birimi bilgisi bu sağlayıcı/izin seviyesinde sağlanamıyor.
+                            @if (conn.Type == "postgresql")
+                            {
+                                <div class="mt-1 opacity-60">PostgreSQL stok fonksiyonları işletim sistemi disk alanını raporlamaz.</div>
+                            }
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="p-4 text-center text-secondary">
+                        <i class="fas fa-server fa-2x mb-2 d-block opacity-40"></i>
+                        Sunucu metrikleri alınamadı.
+                    </div>
+                }
             </div>
         </div>
     </div>
@@ -707,6 +876,21 @@
                     </div>
                 </div>
                 <div id="columnsError" class="d-none warn-box m-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SQL Metni Büyük Görünüm Modalı -->
+<div class="modal fade" id="sqlTextModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content" style="background:#161b27;border:1px solid #2d3748;">
+            <div class="modal-header" style="border-color:#2d3748;">
+                <h5 class="modal-title text-light"><i class="fas fa-terminal me-2 text-primary"></i>SQL Metni</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="sqlTextModalContent" class="query-text" style="font-size:.95rem;white-space:pre-wrap;word-break:break-word;margin:0;"></pre>
             </div>
         </div>
     </div>
@@ -760,21 +944,186 @@
         options:{ responsive:true, plugins:{ legend:{ position:'bottom', labels:{ color:'#94a3b8', boxWidth:10, font:{size:10} } } } }
     });
 
-    // Otomatik yenileme
+    // Canlı yenileme — sayfayı yeniden yüklemeden sadece oturum/uzun sorgu/blocking verisini günceller
     let _refreshTimer = null;
-    const _refreshSec = 30;
+    const _refreshSec = 15;
+    const _liveUrlBase = '@Url.Action("LiveStatus", "Database")' +
+        `?name=${encodeURIComponent('@db.Name')}&connectionId=${encodeURIComponent('@conn.Id')}`;
 
     function toggleAutoRefresh() {
         const btn = document.getElementById('autoRefreshBtn');
+        const indicator = document.getElementById('liveIndicator');
         if (_refreshTimer) {
             clearInterval(_refreshTimer);
             _refreshTimer = null;
             btn.classList.remove('active-refresh');
+            indicator.classList.add('d-none');
         } else {
-            _refreshTimer = setInterval(() => location.reload(), _refreshSec * 1000);
+            refreshLiveStatus();
+            _refreshTimer = setInterval(refreshLiveStatus, _refreshSec * 1000);
             btn.classList.add('active-refresh');
+            indicator.classList.remove('d-none');
         }
     }
+
+    async function refreshLiveStatus() {
+        try {
+            const resp = await fetch(_liveUrlBase, { cache: 'no-store' });
+            const data = await resp.json();
+            if (data.error) return;
+
+            document.getElementById('metricSessionCount').textContent = data.sessionCount;
+            document.getElementById('metricBlockingCount').textContent = data.blockingCount;
+            document.getElementById('metricLongQCount').textContent = data.longRunningCount;
+            document.getElementById('liveTimestamp').textContent = new Date(data.timestamp).toLocaleTimeString('tr-TR');
+
+            replaceTableBody('tblSessions', data.sessions, renderSessionRow);
+            replaceTableBody('tblLongQ', data.longRunning, renderLongQRow);
+            replaceTableBody('tblBlocking', data.blocking, renderBlockingRow);
+        } catch (e) {
+            console.warn('Canlı yenileme başarısız:', e);
+        }
+    }
+
+    function replaceTableBody(tableId, rows, renderFn) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const api = $.fn.dataTable.isDataTable('#' + tableId) ? $('#' + tableId).DataTable() : null;
+        const html = rows.map(renderFn).join('');
+        if (api) {
+            api.destroy();
+        }
+        table.querySelector('tbody').innerHTML = html;
+        $('#' + tableId).DataTable({
+            pageLength: 25,
+            language: { search:'Ara:', lengthMenu:'_MENU_ kayıt', info:'_TOTAL_ kayıttan _START_–_END_', paginate:{previous:'‹',next:'›'}, emptyTable:'Kayıt yok', zeroRecords:'Eşleşen yok' }
+        });
+    }
+
+    function esc(v) { return v === null || v === undefined ? '—' : v; }
+
+    // data-* attribute değerleri için güvenli kaçışlama — SQL metni tırnak/açı parantezi içerebilir
+    function escAttr(v) {
+        return (v ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function renderSessionRow(s) {
+        const dotClass = s.blockingSessionId > 0 ? 'dot-blocked' : (s.status || '').toLowerCase() === 'running' ? 'dot-active' : 'dot-idle';
+        const blockBadge = s.blockingSessionId > 0 ? `<span class="badge bg-danger">Blok: ${s.blockingSessionId}</span>` : '<span class="text-secondary">—</span>';
+        return `<tr>
+            <td><span class="text-secondary small">${s.sessionId}</span></td>
+            <td><span class="fw-semibold">${esc(s.loginName)}</span></td>
+            <td><small class="text-secondary">${esc(s.hostName)}</small></td>
+            <td><small>${esc(s.databaseName)}</small></td>
+            <td><span class="status-dot ${dotClass}"></span><small>${esc(s.status)}</small></td>
+            <td><small class="text-info">${esc(s.command)}</small></td>
+            <td class="text-end"><small>${s.cpuTime ?? '—'}</small></td>
+            <td class="text-end"><small>${s.memoryUsageKB ?? '—'}</small></td>
+            <td class="text-nowrap"><small class="text-secondary">${s.loginTime ? new Date(s.loginTime).toLocaleString('tr-TR') : '—'}</small></td>
+            <td style="max-width:160px;"><small class="text-secondary text-truncate d-block" title="${esc(s.programName)}">${esc(s.programName)}</small></td>
+            <td>${blockBadge}</td>
+        </tr>`;
+    }
+
+    function renderLongQRow(q) {
+        const elapsedClass = q.elapsedSeconds > 300 ? 'text-danger fw-bold' : q.elapsedSeconds > 60 ? 'text-warning' : 'text-success';
+        const blockBadge = q.blockingSessionId > 0 ? `<span class="badge bg-danger">Blok: ${q.blockingSessionId}</span>` : '<span class="text-secondary">—</span>';
+        const text = q.queryText && q.queryText.length > 200 ? q.queryText.slice(0,200) + '…' : (q.queryText || '—');
+        const hoverCls = q.queryText ? 'sql-hover' : '';
+        const hoverStyle = q.queryText ? 'cursor:zoom-in;' : '';
+        return `<tr>
+            <td><span class="text-secondary">${q.sessionId}</span></td>
+            <td><span class="fw-semibold">${esc(q.loginName)}</span></td>
+            <td><small>${esc(q.databaseName)}</small></td>
+            <td><small class="text-info">${esc(q.status)}</small></td>
+            <td class="text-end"><span class="${elapsedClass}">${Number(q.elapsedSeconds).toLocaleString('tr-TR')}</span></td>
+            <td class="text-end text-secondary"><small>${q.cpuTime ?? '—'}</small></td>
+            <td class="text-end text-secondary"><small>${q.logicalReads ?? '—'}</small></td>
+            <td><small class="text-warning">${esc(q.waitType)}</small></td>
+            <td>${blockBadge}</td>
+            <td style="max-width:320px;"><div class="query-text small ${hoverCls}" style="max-height:60px;overflow-y:auto;${hoverStyle}" data-full-sql="${escAttr(q.queryText)}" title="${q.queryText ? 'Tam SQL\'i görmek için üzerine gelin' : ''}">${text}</div></td>
+        </tr>`;
+    }
+
+    function renderBlockingRow(b) {
+        const blockedQ = b.blockedQuery && b.blockedQuery.length > 150 ? b.blockedQuery.slice(0,150) + '…' : (b.blockedQuery || '—');
+        const blockingQ = b.blockingQuery && b.blockingQuery.length > 150 ? b.blockingQuery.slice(0,150) + '…' : (b.blockingQuery || '—');
+        const blockedCls = b.blockedQuery ? 'sql-hover' : '';
+        const blockingCls = b.blockingQuery ? 'sql-hover' : '';
+        return `<tr>
+            <td><span class="badge bg-danger">${b.blockedSessionId}</span></td>
+            <td><span class="badge bg-warning text-dark">${b.blockingSessionId}</span></td>
+            <td><small>${esc(b.blockedLogin)}</small></td>
+            <td><small class="text-warning">${esc(b.blockingLogin)}</small></td>
+            <td><small>${esc(b.databaseName)}</small></td>
+            <td><small class="text-warning">${esc(b.waitType)}</small></td>
+            <td class="text-end text-danger fw-bold">${Number(b.waitTimeMs).toLocaleString('tr-TR')}</td>
+            <td style="max-width:240px;"><div class="query-text small ${blockedCls}" style="max-height:60px;overflow-y:auto;${blockedCls ? 'cursor:zoom-in;' : ''}" data-full-sql="${escAttr(b.blockedQuery)}" title="${blockedCls ? 'Tam SQL\'i görmek için üzerine gelin' : ''}">${blockedQ}</div></td>
+            <td style="max-width:240px;"><div class="query-text small ${blockingCls}" style="max-height:60px;overflow-y:auto;${blockingCls ? 'cursor:zoom-in;' : ''}" data-full-sql="${escAttr(b.blockingQuery)}" title="${blockingCls ? 'Tam SQL\'i görmek için üzerine gelin' : ''}">${blockingQ}</div></td>
+        </tr>`;
+    }
+
+    // Trend grafikleri — ilk açılışta ve aralık değiştiğinde History endpoint'inden çekilir
+    let _sizeChart = null, _activityChart = null, _trendLoaded = false;
+
+    async function loadTrendChart() {
+        const hours = document.getElementById('trendRange').value;
+        const url = '@Url.Action("History", "Database")' +
+            `?name=${encodeURIComponent('@db.Name')}&connectionId=${encodeURIComponent('@conn.Id')}&hours=${hours}`;
+        try {
+            const resp = await fetch(url);
+            const data = await resp.json();
+
+            if (!data.length) {
+                document.getElementById('trendEmpty').classList.remove('d-none');
+                document.getElementById('trendCharts').classList.add('d-none');
+                return;
+            }
+            document.getElementById('trendEmpty').classList.add('d-none');
+            document.getElementById('trendCharts').classList.remove('d-none');
+
+            const labels = data.map(d => new Date(d.timestamp).toLocaleString('tr-TR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }));
+
+            if (_sizeChart) _sizeChart.destroy();
+            _sizeChart = new Chart(document.getElementById('trendSizeChart'), {
+                type: 'line',
+                data: { labels, datasets: [{ label: 'Boyut (MB)', data: data.map(d => d.sizeMB), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', fill: true, tension: .25, pointRadius: 0 }] },
+                options: { responsive:true, plugins:{legend:{display:false}}, scales:{ x:{ticks:{color:'#94a3b8',maxTicksLimit:8},grid:{color:'#1e2535'}}, y:{ticks:{color:'#94a3b8'},grid:{color:'#1e2535'}} } }
+            });
+
+            if (_activityChart) _activityChart.destroy();
+            _activityChart = new Chart(document.getElementById('trendActivityChart'), {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Oturum', data: data.map(d => d.activeSessionCount), borderColor: '#06b6d4', tension:.25, pointRadius:0 },
+                        { label: 'Uzun Sorgu', data: data.map(d => d.longRunningCount), borderColor: '#f59e0b', tension:.25, pointRadius:0 },
+                        { label: 'Blocking', data: data.map(d => d.blockingCount), borderColor: '#ef4444', tension:.25, pointRadius:0 }
+                    ]
+                },
+                options: { responsive:true, plugins:{legend:{labels:{color:'#94a3b8'}}}, scales:{ x:{ticks:{color:'#94a3b8',maxTicksLimit:8},grid:{color:'#1e2535'}}, y:{ticks:{color:'#94a3b8'},grid:{color:'#1e2535'},beginAtZero:true} } }
+            });
+            _trendLoaded = true;
+        } catch (e) {
+            console.warn('Trend grafiği yüklenemedi:', e);
+        }
+    }
+
+    // SQL metnini büyük göster — kesilmiş sorgu üzerine gelince modal açılır
+    const _sqlModalEl = document.getElementById('sqlTextModal');
+    const _sqlModal = new bootstrap.Modal(_sqlModalEl);
+    let _sqlModalShownFor = null;
+
+    document.addEventListener('mouseover', function (e) {
+        const cell = e.target.closest('.sql-hover');
+        if (!cell || cell === _sqlModalShownFor) return;
+        _sqlModalShownFor = cell;
+        document.getElementById('sqlTextModalContent').textContent = cell.dataset.fullSql || '';
+        _sqlModal.show();
+    });
+
+    _sqlModalEl.addEventListener('hidden.bs.modal', () => { _sqlModalShownFor = null; });
 
     // Sütun detayları
     const _colsModal = new bootstrap.Modal(document.getElementById('columnsModal'));
